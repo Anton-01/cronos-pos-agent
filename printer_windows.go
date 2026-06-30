@@ -5,8 +5,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/alexbrainman/printer"
 	"golang.org/x/sys/windows/registry"
@@ -146,6 +149,35 @@ func enableAutostart() error {
 		return fmt.Errorf("no se pudo escribir en el registro: %w", err)
 	}
 	return nil
+}
+
+func killOrphanInstances() {
+	currentPID := os.Getpid()
+
+	out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq cronos-pos-agent.exe", "/FO", "CSV", "/NH").CombinedOutput()
+
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "No tasks") {
+			continue
+		}
+		fields := strings.Split(line, "\",\"")
+		if len(fields) < 2 {
+			continue
+		}
+		pidStr := strings.Trim(fields[1], "\"")
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil || pid == currentPID {
+			continue
+		}
+
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		proc.Kill()
+		log.Printf("[self-healing] Instancia huérfana PID %d eliminada", pid)
+	}
 }
 
 func disableAutostart() error {

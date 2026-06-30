@@ -9,12 +9,13 @@ import (
 	"sync"
 )
 
-const AgentVersion = "1.1.0"
+const AgentVersion = "1.2.0"
 
 type Config struct {
 	APIToken       string   `json:"api_token"`
 	AllowedOrigins []string `json:"allowed_origins"`
 	UpdateURL      string   `json:"update_url"`
+	Port           int      `json:"port"`
 }
 
 var defaultOrigins = []string{
@@ -63,6 +64,11 @@ func LoadConfig() (Config, error) {
 
 		if appConfig.UpdateURL == "" {
 			appConfig.UpdateURL = defaultUpdateURL
+			needsWrite = true
+		}
+
+		if appConfig.Port == 0 {
+			appConfig.Port = defaultPort
 			needsWrite = true
 		}
 

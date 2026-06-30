@@ -4,9 +4,11 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -95,6 +97,29 @@ func queryPrintQueue(printerName string) (QueueInfo, error) {
 		Status:      status,
 		Jobs:        jobs,
 	}, nil
+}
+
+func killOrphanInstances() {
+	currentPID := os.Getpid()
+
+	out, _ := exec.Command("pgrep", "-f", "cronos-pos-agent").CombinedOutput()
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil || pid == currentPID {
+			continue
+		}
+
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		proc.Kill()
+		log.Printf("[self-healing] Instancia huérfana PID %d eliminada", pid)
+	}
 }
 
 const launchAgentLabel = "com.cronos.pos-agent"

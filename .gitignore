@@ -3,3 +3,7 @@ cronos-pos-agent
 cronos-pos-agent.exe
 cronos-agent.log
 cronos-agent.log.*
+private-key.pem
+digital-certificate.txt
+build/
+installer/Output/
