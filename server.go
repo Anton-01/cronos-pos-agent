@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"net/http"
 	"runtime"
+	"time"
 )
 
 func buildOriginsMap(origins []string) map[string]bool {
@@ -67,10 +69,55 @@ func NewRouter(cfg Config) http.Handler {
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/api/health", handleAPIHealth)
 	mux.HandleFunc("/api/printers", handlePrinters)
+	mux.HandleFunc("/api/printers/queue", handlePrinterQueue)
 	mux.HandleFunc("/api/print", handlePrint)
 
 	originsMap := buildOriginsMap(cfg.AllowedOrigins)
 	return corsMiddleware(originsMap, authMiddleware(cfg.APIToken, mux))
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"service": "cronos-pos-agent",
+		"version": AgentVersion,
+	})
+}
+
+type HealthResponse struct {
+	Status        string  `json:"status"`
+	Version       string  `json:"version"`
+	UptimeSeconds int     `json:"uptime_seconds"`
+	MemoryUsageMB float64 `json:"memory_usage_mb"`
+}
+
+func handleAPIHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
+	allocMB := float64(mem.Alloc) / 1024 / 1024
+	allocMB = math.Round(allocMB*100) / 100
+
+	resp := HealthResponse{
+		Status:        "ok",
+		Version:       AgentVersion,
+		UptimeSeconds: int(time.Since(startTime).Seconds()),
+		MemoryUsageMB: allocMB,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func handlePrinters(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +139,37 @@ func handlePrinters(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(printers)
+}
+
+func handlePrinterQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	printerName := r.URL.Query().Get("printer_name")
+	if printerName == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "El parámetro 'printer_name' es obligatorio",
+		})
+		return
+	}
+
+	queue, err := queryPrintQueue(printerName)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "Error consultando la cola de impresión",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(queue)
 }
 
 func handlePrint(w http.ResponseWriter, r *http.Request) {
@@ -146,55 +224,4 @@ func handlePrint(w http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"message": "Documento enviado a la impresora correctamente",
 	})
-}
-
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "ok",
-		"service": "cronos-pos-agent",
-		"version": AgentVersion,
-	})
-}
-
-type HealthResponse struct {
-	Status       string        `json:"status"`
-	Version      string        `json:"version"`
-	Platform     string        `json:"platform"`
-	MemoryMB     float64       `json:"memory_mb"`
-	AllocMB      float64       `json:"alloc_mb"`
-	NumGoroutine int           `json:"num_goroutines"`
-	Printers     []PrinterInfo `json:"printers"`
-	PrinterCount int           `json:"printer_count"`
-}
-
-func handleAPIHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-
-	printers, _ := discoverPrinters()
-
-	resp := HealthResponse{
-		Status:       "ok",
-		Version:      AgentVersion,
-		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
-		MemoryMB:     float64(mem.Sys) / 1024 / 1024,
-		AllocMB:      float64(mem.Alloc) / 1024 / 1024,
-		NumGoroutine: runtime.NumGoroutine(),
-		Printers:     printers,
-		PrinterCount: len(printers),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }

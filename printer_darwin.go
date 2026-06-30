@@ -4,9 +4,11 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +48,78 @@ func rawPrint(printerName string, data []byte) error {
 	}
 
 	return nil
+}
+
+func queryPrintQueue(printerName string) (QueueInfo, error) {
+	out, err := exec.Command("lpstat", "-W", "not-completed", "-o", printerName).CombinedOutput()
+	if err != nil {
+		outStr := strings.TrimSpace(string(out))
+		if strings.Contains(outStr, "No destinations added") || strings.Contains(outStr, "Unknown") {
+			return QueueInfo{}, fmt.Errorf("impresora '%s' no encontrada en CUPS", printerName)
+		}
+		return QueueInfo{
+			PrinterName: printerName,
+			JobsCount:   0,
+			Status:      "idle",
+		}, nil
+	}
+
+	var jobs []PrintJob
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		jobID := 0
+		parts := strings.SplitN(fields[0], "-", 2)
+		if len(parts) == 2 {
+			fmt.Sscanf(parts[1], "%d", &jobID)
+		}
+		docName := strings.Join(fields[2:len(fields)-1], " ")
+		jobs = append(jobs, PrintJob{
+			ID:           jobID,
+			DocumentName: docName,
+			State:        "pending",
+		})
+	}
+
+	status := "idle"
+	if len(jobs) > 0 {
+		status = "processing"
+	}
+
+	return QueueInfo{
+		PrinterName: printerName,
+		JobsCount:   len(jobs),
+		Status:      status,
+		Jobs:        jobs,
+	}, nil
+}
+
+func killOrphanInstances() {
+	currentPID := os.Getpid()
+
+	out, _ := exec.Command("pgrep", "-f", "cronos-pos-agent").CombinedOutput()
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil || pid == currentPID {
+			continue
+		}
+
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		proc.Kill()
+		log.Printf("[self-healing] Instancia huérfana PID %d eliminada", pid)
+	}
 }
 
 const launchAgentLabel = "com.cronos.pos-agent"
