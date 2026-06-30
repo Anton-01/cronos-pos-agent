@@ -21,7 +21,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		if allowedOrigins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Cronos-Agent-Token")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 			w.Header().Set("Vary", "Origin")
 		}
@@ -39,14 +39,35 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func NewRouter() http.Handler {
+func authMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		provided := r.Header.Get("X-Cronos-Agent-Token")
+		if provided == "" || provided != token {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "Token de autenticación inválido o ausente",
+			})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func NewRouter(apiToken string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/api/printers", handlePrinters)
 	mux.HandleFunc("/api/print", handlePrint)
 
-	return corsMiddleware(mux)
+	return corsMiddleware(authMiddleware(apiToken, mux))
 }
 
 func handlePrinters(w http.ResponseWriter, r *http.Request) {

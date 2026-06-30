@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -45,4 +46,46 @@ func rawPrint(printerName string, data []byte) error {
 	}
 
 	return nil
+}
+
+const launchAgentLabel = "com.cronos.pos-agent"
+
+func launchAgentPlistPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
+}
+
+func isAutostartEnabled() bool {
+	_, err := os.Stat(launchAgentPlistPath())
+	return err == nil
+}
+
+func enableAutostart() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("no se pudo obtener la ruta del ejecutable: %w", err)
+	}
+
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>%s</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>%s</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>`, launchAgentLabel, exePath)
+
+	return os.WriteFile(launchAgentPlistPath(), []byte(plist), 0644)
+}
+
+func disableAutostart() error {
+	return os.Remove(launchAgentPlistPath())
 }
