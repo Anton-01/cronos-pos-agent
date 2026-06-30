@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 )
@@ -43,6 +44,7 @@ func NewRouter() http.Handler {
 
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/api/printers", handlePrinters)
+	mux.HandleFunc("/api/print", handlePrint)
 
 	return corsMiddleware(mux)
 }
@@ -66,6 +68,60 @@ func handlePrinters(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(printers)
+}
+
+func handlePrint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req PrintRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "JSON inválido en el cuerpo de la petición",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if req.PrinterName == "" || req.PrinterData == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Los campos 'printer_name' y 'printer_data' son obligatorios",
+		})
+		return
+	}
+
+	rawBytes, err := base64.StdEncoding.DecodeString(req.PrinterData)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "El campo 'printer_data' no es Base64 válido",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if err := rawPrint(req.PrinterName, rawBytes); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "Error al imprimir en la impresora especificada",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "Documento enviado a la impresora correctamente",
+	})
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {

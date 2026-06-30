@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 2: Autodescubrimiento de Impresoras** — Completado
+**Fase 3: Motor RAW Operativo** — Completado
 
-Fase 1 (Inicialización) completada. Fase 2 agrega autodescubrimiento de impresoras del sistema operativo mediante build tags por plataforma.
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Impresión RAW ESC/POS).
 
 ## Arquitectura
 
@@ -18,8 +18,10 @@ Fase 1 (Inicialización) completada. Fase 2 agrega autodescubrimiento de impreso
 | CORS | Middleware custom | Control estricto de orígenes permitidos |
 | Binding | `127.0.0.1:9100` | Solo loopback, nunca expuesto a la red |
 | Printers (Win) | `github.com/alexbrainman/printer` | Acceso al Windows Print Spooler via syscall |
-| Printers (Mac) | `lpstat -a` (stdlib `os/exec`) | Comando CUPS nativo, sin dependencias externas |
+| Printers (Mac) | `lpstat -a` / `lp -d -o raw` (stdlib `os/exec`) | Descubrimiento e impresión CUPS nativa |
 | Build Tags | `//go:build windows` / `//go:build darwin` | Compilación condicional por plataforma |
+| Impresión (Win) | `printer.Open` + `StartRawDocument` | Inyección RAW directa al Spooler sin filtro de driver |
+| Impresión (Mac) | `lp -d <name> -o raw <tmpfile>` | Envío RAW via CUPS con archivo temporal auto-eliminado |
 
 ### Estructura de Archivos
 
@@ -44,6 +46,7 @@ Base: `http://127.0.0.1:9100`
 |---|---|---|---|
 | `GET` | `/health` | Health check del agente | Implementado |
 | `GET` | `/api/printers` | Lista impresoras instaladas en el SO | Implementado |
+| `POST` | `/api/print` | Envía datos RAW (ESC/POS) a una impresora | Implementado |
 
 ## CORS — Orígenes Permitidos
 
@@ -56,6 +59,30 @@ Base: `http://127.0.0.1:9100`
 | `http://127.0.0.1:5173` | Desarrollo local (Vite) |
 
 Preflight `OPTIONS` responde `204 No Content` si el origen es válido, `403 Forbidden` si no lo es.
+
+## Payload de Impresión — `POST /api/print`
+
+```json
+{
+  "printer_name": "EPSON_TM_T20III",
+  "printer_data": "G0BIb2xhIE11bmRvIQ=="
+}
+```
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `printer_name` | `string` | Nombre exacto de la impresora tal como aparece en `GET /api/printers` |
+| `printer_data` | `string` | Comandos ESC/POS codificados en Base64 estándar (RFC 4648) |
+
+El agente decodifica `printer_data` a `[]byte` y los inyecta como documento RAW al spooler/CUPS, sin que el driver altere los bytes. Esto preserva comandos ESC/POS (corte de papel, negritas, códigos de barras, etc.).
+
+**Respuestas:**
+
+| Código | Significado |
+|---|---|
+| `200` | `{"status":"ok","message":"Documento enviado a la impresora correctamente"}` |
+| `400` | JSON inválido, campos faltantes, o Base64 malformado |
+| `500` | Error del spooler/impresora (nombre no encontrado, conexión fallida, etc.) |
 
 ## Menú Systray
 
@@ -73,11 +100,11 @@ Preflight `OPTIONS` responde `204 No Content` si el origen es válido, `403 Forb
 
 ## Fases Pendientes
 
-### Fase 2: Impresión (parcialmente completada)
+### Fase 2–3: Impresión — Completada
 - ~~Descubrimiento de impresoras del sistema (Windows/Mac)~~ ✓
-- Endpoint `POST /print` que reciba payload con datos del ticket
-- Renderizado de ticket (texto plano, ESC/POS, o HTML→PDF)
-- Envío directo a impresora seleccionada
+- ~~Endpoint `POST /api/print` con payload Base64 ESC/POS~~ ✓
+- ~~Inyección RAW directa al hardware (Windows Spooler / Mac CUPS)~~ ✓
+- Renderizado HTML→PDF (opcional, no requerido para ESC/POS directo)
 
 ### Fase 3: Comunicación Bidireccional
 - WebSocket o SSE para push desde el agente al SaaS
