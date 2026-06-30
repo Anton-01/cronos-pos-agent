@@ -15,13 +15,20 @@ func main() {
 }
 
 func onReady() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		log.Fatalf("Error cargando configuración: %v", err)
+	}
+	log.Printf("Token API cargado desde config.json")
+
 	systray.SetTitle("Cronos Agent")
 	systray.SetTooltip("Cronos POS Agent")
 
 	mStatus := systray.AddMenuItem("Cronos Agent: Operativo", "Estado del agente")
 	mStatus.Disable()
 
-	mAutostart := systray.AddMenuItemCheckbox("Iniciar con el Sistema", "Iniciar automáticamente con el sistema", false)
+	autostartEnabled := isAutostartEnabled()
+	mAutostart := systray.AddMenuItemCheckbox("Iniciar con el Sistema", "Iniciar automáticamente con el sistema", autostartEnabled)
 
 	systray.AddSeparator()
 
@@ -29,7 +36,7 @@ func onReady() {
 
 	srv := &http.Server{
 		Addr:    "127.0.0.1:9100",
-		Handler: NewRouter(),
+		Handler: NewRouter(cfg.APIToken),
 	}
 
 	go func() {
@@ -47,8 +54,14 @@ func onReady() {
 			select {
 			case <-mAutostart.ClickedCh:
 				if mAutostart.Checked() {
+					if err := disableAutostart(); err != nil {
+						log.Printf("Error desactivando auto-arranque: %v", err)
+					}
 					mAutostart.Uncheck()
 				} else {
+					if err := enableAutostart(); err != nil {
+						log.Printf("Error activando auto-arranque: %v", err)
+					}
 					mAutostart.Check()
 				}
 			case <-mQuit.ClickedCh:
