@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 1: Inicialización** — Completada
+**Fase 2: Autodescubrimiento de Impresoras** — Completado
 
-El proyecto ha sido inicializado con la estructura base: systray, servidor HTTP y middleware CORS.
+Fase 1 (Inicialización) completada. Fase 2 agrega autodescubrimiento de impresoras del sistema operativo mediante build tags por plataforma.
 
 ## Arquitectura
 
@@ -17,16 +17,22 @@ El proyecto ha sido inicializado con la estructura base: systray, servidor HTTP 
 | Servidor HTTP | `net/http` (stdlib) | Sin dependencias externas, rendimiento suficiente para agente local |
 | CORS | Middleware custom | Control estricto de orígenes permitidos |
 | Binding | `127.0.0.1:9100` | Solo loopback, nunca expuesto a la red |
+| Printers (Win) | `github.com/alexbrainman/printer` | Acceso al Windows Print Spooler via syscall |
+| Printers (Mac) | `lpstat -a` (stdlib `os/exec`) | Comando CUPS nativo, sin dependencias externas |
+| Build Tags | `//go:build windows` / `//go:build darwin` | Compilación condicional por plataforma |
 
 ### Estructura de Archivos
 
 ```
 cronos-pos-agent/
-├── main.go        # Systray (menú, señales OS) + goroutine del servidor HTTP
-├── server.go      # Router, middleware CORS, handlers de endpoints
+├── main.go              # Systray (menú, señales OS) + goroutine del servidor HTTP
+├── server.go            # Router, middleware CORS, handlers de endpoints
+├── printer.go           # Tipo PrinterInfo compartido entre plataformas
+├── printer_windows.go   # Build tag: windows — descubrimiento via Win32 Spooler
+├── printer_darwin.go    # Build tag: darwin — descubrimiento via lpstat (CUPS)
 ├── go.mod
 ├── go.sum
-├── CONTEXT.md     # Este archivo — fuente de verdad del proyecto
+├── CONTEXT.md           # Este archivo — fuente de verdad del proyecto
 └── README.md
 ```
 
@@ -37,6 +43,7 @@ Base: `http://127.0.0.1:9100`
 | Método | Ruta | Descripción | Estado |
 |---|---|---|---|
 | `GET` | `/health` | Health check del agente | Implementado |
+| `GET` | `/api/printers` | Lista impresoras instaladas en el SO | Implementado |
 
 ## CORS — Orígenes Permitidos
 
@@ -62,11 +69,12 @@ Preflight `OPTIONS` responde `204 No Content` si el origen es válido, `403 Forb
 | Módulo | Versión | Uso |
 |---|---|---|
 | `github.com/getlantern/systray` | v1.2.2 | Icono y menú en barra de tareas |
+| `github.com/alexbrainman/printer` | v0.0.0-20200912 | Lectura del Windows Print Spooler |
 
 ## Fases Pendientes
 
-### Fase 2: Impresión
-- Descubrimiento de impresoras del sistema (Windows/Mac)
+### Fase 2: Impresión (parcialmente completada)
+- ~~Descubrimiento de impresoras del sistema (Windows/Mac)~~ ✓
 - Endpoint `POST /print` que reciba payload con datos del ticket
 - Renderizado de ticket (texto plano, ESC/POS, o HTML→PDF)
 - Envío directo a impresora seleccionada

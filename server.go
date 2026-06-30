@@ -42,8 +42,30 @@ func NewRouter() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/api/printers", handlePrinters)
 
 	return corsMiddleware(mux)
+}
+
+func handlePrinters(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	printers, err := discoverPrinters()
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "No se pudieron obtener las impresoras del sistema",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(printers)
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
