@@ -6,11 +6,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/getlantern/systray"
 )
 
+var startTime time.Time
+
 func main() {
+	startTime = time.Now()
+
 	logCloser, err := SetupLogger()
 	if err != nil {
 		log.Fatalf("Error inicializando logger: %v", err)

@@ -3,8 +3,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/alexbrainman/printer"
 	"golang.org/x/sys/windows/registry"
@@ -51,6 +53,67 @@ func rawPrint(printerName string, data []byte) error {
 	}
 
 	return nil
+}
+
+func queryPrintQueue(printerName string) (QueueInfo, error) {
+	psCmd := fmt.Sprintf(
+		"Get-PrintJob -PrinterName '%s' | Select-Object Id, DocumentName, @{Name='JobState';Expression={$_.JobStatus}} | ConvertTo-Json -Compress",
+		printerName,
+	)
+
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", psCmd).CombinedOutput()
+	if err != nil {
+		return QueueInfo{}, fmt.Errorf("error consultando cola de impresión: %w (salida: %s)", err, string(out))
+	}
+
+	trimmed := string(out)
+	if trimmed == "" || trimmed == "\r\n" || trimmed == "\n" {
+		return QueueInfo{
+			PrinterName: printerName,
+			JobsCount:   0,
+			Status:      "idle",
+		}, nil
+	}
+
+	type psJob struct {
+		Id           int    `json:"Id"`
+		DocumentName string `json:"DocumentName"`
+		JobState     string `json:"JobState"`
+	}
+
+	var jobs []psJob
+
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal([]byte(trimmed), &jobs); err != nil {
+			return QueueInfo{}, fmt.Errorf("error parseando JSON de cola: %w", err)
+		}
+	} else {
+		var single psJob
+		if err := json.Unmarshal([]byte(trimmed), &single); err != nil {
+			return QueueInfo{}, fmt.Errorf("error parseando JSON de cola: %w", err)
+		}
+		jobs = append(jobs, single)
+	}
+
+	result := QueueInfo{
+		PrinterName: printerName,
+		JobsCount:   len(jobs),
+		Status:      "processing",
+	}
+
+	for _, j := range jobs {
+		result.Jobs = append(result.Jobs, PrintJob{
+			ID:           j.Id,
+			DocumentName: j.DocumentName,
+			State:        j.JobState,
+		})
+	}
+
+	if len(jobs) == 0 {
+		result.Status = "idle"
+	}
+
+	return result, nil
 }
 
 const registryKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`

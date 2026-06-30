@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-const AgentVersion = "0.2.0"
+const AgentVersion = "1.1.0"
 
 type Config struct {
 	APIToken       string   `json:"api_token"`

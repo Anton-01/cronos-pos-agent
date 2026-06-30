@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 5: Expansión Enterprise** — Completada
+**Fase 5: CORS Dinámico y Monitoreo de Spooler** — Completado
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health avanzado, Logs con rotación, Auto-updates).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health con uptime, Monitoreo de cola de impresión, Logs con rotación, Auto-updates).
 
 ## Arquitectura
 
@@ -20,6 +20,8 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Auth | Token local UUID v4 + header `X-Cronos-Agent-Token` | Sin servidor externo, generado al primer arranque |
 | Printers (Win) | `github.com/alexbrainman/printer` | Acceso al Windows Print Spooler via syscall |
 | Printers (Mac) | `lpstat -a` / `lp -d -o raw` (stdlib `os/exec`) | Descubrimiento e impresión CUPS nativa |
+| Cola (Win) | PowerShell `Get-PrintJob` | Lectura nativa del Spooler sin CGO |
+| Cola (Mac) | `lpstat -W not-completed -o` | Consulta CUPS nativa de trabajos pendientes |
 | Build Tags | `//go:build windows` / `//go:build darwin` | Compilación condicional por plataforma |
 | Impresión (Win) | `printer.Open` + `StartRawDocument` | Inyección RAW directa al Spooler sin filtro de driver |
 | Impresión (Mac) | `lp -d <name> -o raw <tmpfile>` | Envío RAW via CUPS con archivo temporal auto-eliminado |
@@ -32,14 +34,14 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 
 ```
 cronos-pos-agent/
-├── main.go              # Systray (menú, señales OS) + goroutines (HTTP, updater)
-├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers
-├── config.go            # Carga/generación de config.json, constante AgentVersion
+├── main.go              # Systray (menú, señales OS) + goroutines (HTTP, updater) + startTime
+├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (5 endpoints)
+├── config.go            # Carga/generación de config.json, constante AgentVersion (1.1.0)
 ├── logger.go            # RotatingLogger: escritura a archivo con rotación 10MB/3 backups
 ├── updater.go           # CheckForUpdates: polling de versión contra servidor central
-├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest)
-├── printer_windows.go   # Build tag: windows — spooler, RAW print, autostart (registro)
-├── printer_darwin.go    # Build tag: darwin — CUPS, RAW print, autostart (launchd)
+├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
+├── printer_windows.go   # Build tag: windows — spooler, RAW print, cola (PowerShell), autostart
+├── printer_darwin.go    # Build tag: darwin — CUPS, RAW print, cola (lpstat), autostart
 ├── config.json          # (generado en runtime) — NO versionar
 ├── cronos-agent.log     # (generado en runtime) — NO versionar
 ├── .gitignore
@@ -70,7 +72,7 @@ Generado automáticamente en el primer arranque junto al ejecutable (permisos `0
 | Propiedad | Tipo | Descripción |
 |---|---|---|
 | `api_token` | `string` | UUID v4 generado con `crypto/rand`. Valida header `X-Cronos-Agent-Token` |
-| `allowed_origins` | `string[]` | Lista de orígenes CORS permitidos. Editable sin recompilar |
+| `allowed_origins` | `string[]` | Lista de orígenes CORS permitidos. Editable sin recompilar. Se convierte a `map[string]bool` al arrancar |
 | `update_url` | `string` | URL del JSON de versión para auto-updates |
 
 Si el archivo ya existe al arrancar, el agente preserva los valores del usuario y solo rellena campos faltantes con valores por defecto.
@@ -90,8 +92,9 @@ Base: `http://127.0.0.1:9100`
 | Método | Ruta | Auth | Descripción | Estado |
 |---|---|---|---|---|
 | `GET` | `/health` | No | Health check básico (status, service, version) | Implementado |
-| `GET` | `/api/health` | Si | Health avanzado (RAM, goroutines, impresoras) | Implementado |
+| `GET` | `/api/health` | Si | Diagnóstico con uptime y uso de RAM | Implementado |
 | `GET` | `/api/printers` | Si | Lista impresoras instaladas en el SO | Implementado |
+| `GET` | `/api/printers/queue` | Si | Cola de impresión de una impresora específica | Implementado |
 | `POST` | `/api/print` | Si | Envía datos RAW (ESC/POS) a una impresora | Implementado |
 
 ## Respuesta de `GET /api/health`
@@ -99,16 +102,9 @@ Base: `http://127.0.0.1:9100`
 ```json
 {
   "status": "ok",
-  "version": "0.2.0",
-  "platform": "windows/amd64",
-  "memory_mb": 12.45,
-  "alloc_mb": 3.21,
-  "num_goroutines": 6,
-  "printers": [
-    { "name": "EPSON_TM_T20III" },
-    { "name": "Microsoft Print to PDF" }
-  ],
-  "printer_count": 2
+  "version": "1.1.0",
+  "uptime_seconds": 3842,
+  "memory_usage_mb": 4.27
 }
 ```
 
@@ -116,16 +112,57 @@ Base: `http://127.0.0.1:9100`
 |---|---|---|
 | `status` | `string` | Siempre `"ok"` si el agente está respondiendo |
 | `version` | `string` | Versión actual del agente (`AgentVersion`) |
-| `platform` | `string` | SO y arquitectura (`runtime.GOOS/GOARCH`) |
-| `memory_mb` | `float64` | Memoria total del sistema asignada al proceso (`MemStats.Sys`) |
-| `alloc_mb` | `float64` | Memoria heap actualmente en uso (`MemStats.Alloc`) |
-| `num_goroutines` | `int` | Número de goroutines activas |
-| `printers` | `array` | Lista de impresoras detectadas en el SO |
-| `printer_count` | `int` | Cantidad de impresoras disponibles |
+| `uptime_seconds` | `int` | Segundos desde que el proceso arrancó (`time.Since(startTime)`) |
+| `memory_usage_mb` | `float64` | Memoria heap en uso en MB (`runtime.MemStats.Alloc`), redondeada a 2 decimales |
+
+## Respuesta de `GET /api/printers/queue?printer_name=POS-80`
+
+```json
+{
+  "printer_name": "POS-80",
+  "jobs_count": 2,
+  "status": "processing",
+  "jobs": [
+    {
+      "id": 145,
+      "document_name": "Ticket #4521",
+      "state": "Printing"
+    },
+    {
+      "id": 146,
+      "document_name": "Ticket #4522",
+      "state": "Spooling"
+    }
+  ]
+}
+```
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `printer_name` | `string` | Nombre de la impresora consultada |
+| `jobs_count` | `int` | Número total de trabajos pendientes en la cola |
+| `status` | `string` | `"idle"` si la cola está vacía, `"processing"` si hay trabajos |
+| `jobs` | `array` | Lista detallada de trabajos (omitida si está vacía) |
+
+**Comandos de sistema utilizados para auditar la cola:**
+
+| Plataforma | Comando | Descripción |
+|---|---|---|
+| Windows | `powershell -NoProfile -Command "Get-PrintJob -PrinterName 'X' \| Select-Object Id, DocumentName, @{Name='JobState';Expression={$_.JobStatus}} \| ConvertTo-Json -Compress"` | Lee trabajos del Spooler. PowerShell devuelve un objeto JSON si hay 1 trabajo, un array si hay varios, o string vacío si no hay ninguno. El parser maneja los 3 casos |
+| macOS | `lpstat -W not-completed -o <PrinterName>` | Lista trabajos no completados en CUPS. Cada línea tiene formato `PrinterName-JobID user size date`. Se parsea el ID y nombre del documento |
+
+**Respuestas de error:**
+
+| Código | Significado |
+|---|---|
+| `200` | Cola consultada exitosamente |
+| `400` | Parámetro `printer_name` ausente en query string |
+| `401` | Token de autenticación inválido o ausente |
+| `500` | Error del Spooler/CUPS al consultar la cola |
 
 ## CORS — Orígenes Dinámicos
 
-Los orígenes ahora se leen del arreglo `allowed_origins` en `config.json`. El operador puede agregar o quitar dominios sin recompilar el binario.
+Los orígenes se leen del arreglo `allowed_origins` en `config.json` y se convierten a un `map[string]bool` al arrancar vía `buildOriginsMap()`. El operador puede agregar o quitar dominios editando el JSON sin recompilar.
 
 Headers permitidos en CORS: `Content-Type`, `Authorization`, `X-Cronos-Agent-Token`.
 
@@ -141,22 +178,11 @@ Preflight `OPTIONS` responde `204 No Content` si el origen es válido, `403 Forb
 | Nomenclatura | `cronos-agent.log.1`, `.2`, `.3` |
 | Salida dual | `stdout` + archivo (vía `io.MultiWriter`) |
 
-**Política de retención:** Al alcanzar 10MB, el archivo actual se renombra a `.1`, los existentes rotan (`.1`→`.2`, `.2`→`.3`), y el `.3` anterior se elimina. Esto garantiza un máximo de ~40MB en disco (activo + 3 históricos).
+**Política de retención:** Al alcanzar 10MB, el archivo actual se renombra a `.1`, los existentes rotan (`.1`→`.2`, `.2`→`.3`), y el `.3` anterior se elimina. Máximo ~40MB en disco.
 
 ## Auto-Updates
 
-El agente ejecuta `CheckForUpdates()` en una goroutine al iniciar. Consulta `update_url` cada 6 horas esperando un JSON:
-
-```json
-{
-  "latest_version": "0.3.0",
-  "download_url": "https://pos-app.tech/agent/releases/cronos-pos-agent-0.3.0.exe",
-  "release_notes": "Mejoras de rendimiento en impresión",
-  "mandatory": false
-}
-```
-
-Actualmente solo registra en el log si hay versión nueva disponible. La descarga y reemplazo del binario está preparada como estructura pero pendiente de implementación.
+Consulta `update_url` cada 6 horas. Solo registra en el log si hay versión nueva. Descarga automática pendiente de implementación.
 
 ## Payload de Impresión — `POST /api/print`
 
@@ -167,26 +193,17 @@ Actualmente solo registra en el log si hay versión nueva disponible. La descarg
 }
 ```
 
-| Campo | Tipo | Descripción |
-|---|---|---|
-| `printer_name` | `string` | Nombre exacto de la impresora tal como aparece en `GET /api/printers` |
-| `printer_data` | `string` | Comandos ESC/POS codificados en Base64 estándar (RFC 4648) |
-
-**Respuestas:**
-
 | Código | Significado |
 |---|---|
-| `200` | `{"status":"ok","message":"Documento enviado a la impresora correctamente"}` |
+| `200` | Documento enviado correctamente |
 | `400` | JSON inválido, campos faltantes, o Base64 malformado |
-| `401` | Token ausente o inválido en header `X-Cronos-Agent-Token` |
-| `500` | Error del spooler/impresora (nombre no encontrado, conexión fallida, etc.) |
+| `401` | Token ausente o inválido |
+| `500` | Error del spooler/impresora |
 
 ## Menú Systray
 
 1. **"Cronos Agent: Operativo"** — Deshabilitado (solo indicador visual)
-2. **"Iniciar con el Sistema"** — Checkbox funcional:
-   - **Windows:** Escribe/borra clave `CronosPOSAgent` en `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-   - **Mac:** Crea/elimina plist `com.cronos.pos-agent.plist` en `~/Library/LaunchAgents`
+2. **"Iniciar con el Sistema"** — Checkbox funcional (Windows: Registro, Mac: LaunchAgent)
 3. Separador
 4. **"Salir"** — Cierra el agente
 
@@ -227,9 +244,10 @@ xcode-select --install          # Xcode CLT para compilación nativa Mac
 ### Fase 2: Autodescubrimiento ✓
 ### Fase 3: Motor RAW ESC/POS ✓
 ### Fase 4: Seguridad, Autostart, Build ✓
-### Fase 5: Expansión Enterprise ✓
-- ~~CORS dinámico desde `config.json`~~ ✓
-- ~~Endpoint `GET /api/health` con métricas de runtime~~ ✓
+### Fase 5: CORS Dinámico y Monitoreo de Spooler ✓
+- ~~CORS dinámico desde `config.json` (`allowed_origins`)~~ ✓
+- ~~Endpoint `GET /api/health` con uptime y memoria~~ ✓
+- ~~Endpoint `GET /api/printers/queue` con auditoría de cola nativa~~ ✓
 - ~~Logs con rotación (10MB, 3 backups)~~ ✓
 - ~~Arquitectura de auto-updates (polling cada 6h)~~ ✓
 
