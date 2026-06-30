@@ -9,9 +9,23 @@ import (
 	"sync"
 )
 
+const AgentVersion = "0.2.0"
+
 type Config struct {
-	APIToken string `json:"api_token"`
+	APIToken       string   `json:"api_token"`
+	AllowedOrigins []string `json:"allowed_origins"`
+	UpdateURL      string   `json:"update_url"`
 }
+
+var defaultOrigins = []string{
+	"https://pos-app.tech",
+	"http://localhost:3000",
+	"http://localhost:5173",
+	"http://127.0.0.1:3000",
+	"http://127.0.0.1:5173",
+}
+
+const defaultUpdateURL = "https://pos-app.tech/agent/version.json"
 
 var (
 	appConfig     Config
@@ -22,35 +36,55 @@ var (
 func LoadConfig() (Config, error) {
 	configOnce.Do(func() {
 		configPath := configFilePath()
+		needsWrite := false
 
 		data, err := os.ReadFile(configPath)
 		if err == nil {
-			if err := json.Unmarshal(data, &appConfig); err == nil && appConfig.APIToken != "" {
+			if err := json.Unmarshal(data, &appConfig); err != nil {
+				configLoadErr = fmt.Errorf("config.json corrupto: %w", err)
 				return
 			}
 		}
 
-		token, err := generateUUID()
-		if err != nil {
-			configLoadErr = fmt.Errorf("error generando token: %w", err)
-			return
+		if appConfig.APIToken == "" {
+			token, err := generateUUID()
+			if err != nil {
+				configLoadErr = fmt.Errorf("error generando token: %w", err)
+				return
+			}
+			appConfig.APIToken = token
+			needsWrite = true
 		}
 
-		appConfig = Config{APIToken: token}
-
-		jsonData, err := json.MarshalIndent(appConfig, "", "  ")
-		if err != nil {
-			configLoadErr = fmt.Errorf("error serializando config: %w", err)
-			return
+		if len(appConfig.AllowedOrigins) == 0 {
+			appConfig.AllowedOrigins = defaultOrigins
+			needsWrite = true
 		}
 
-		if err := os.WriteFile(configPath, jsonData, 0600); err != nil {
-			configLoadErr = fmt.Errorf("error escribiendo config.json: %w", err)
-			return
+		if appConfig.UpdateURL == "" {
+			appConfig.UpdateURL = defaultUpdateURL
+			needsWrite = true
+		}
+
+		if needsWrite {
+			if err := saveConfig(configPath); err != nil {
+				configLoadErr = err
+			}
 		}
 	})
 
 	return appConfig, configLoadErr
+}
+
+func saveConfig(path string) error {
+	jsonData, err := json.MarshalIndent(appConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error serializando config: %w", err)
+	}
+	if err := os.WriteFile(path, jsonData, 0600); err != nil {
+		return fmt.Errorf("error escribiendo config.json: %w", err)
+	}
+	return nil
 }
 
 func configFilePath() string {
@@ -59,6 +93,14 @@ func configFilePath() string {
 		return "config.json"
 	}
 	return filepath.Join(filepath.Dir(exe), "config.json")
+}
+
+func agentDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return filepath.Dir(exe)
 }
 
 func generateUUID() (string, error) {

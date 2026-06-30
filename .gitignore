@@ -1,3 +1,5 @@
 config.json
 cronos-pos-agent
 cronos-pos-agent.exe
+cronos-agent.log
+cronos-agent.log.*
