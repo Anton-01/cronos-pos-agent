@@ -11,6 +11,14 @@ import (
 )
 
 func main() {
+	logCloser, err := SetupLogger()
+	if err != nil {
+		log.Fatalf("Error inicializando logger: %v", err)
+	}
+	defer logCloser.Close()
+
+	log.Printf("Cronos POS Agent v%s iniciando...", AgentVersion)
+
 	systray.Run(onReady, onExit)
 }
 
@@ -19,10 +27,10 @@ func onReady() {
 	if err != nil {
 		log.Fatalf("Error cargando configuración: %v", err)
 	}
-	log.Printf("Token API cargado desde config.json")
+	log.Printf("Configuración cargada (%d orígenes CORS)", len(cfg.AllowedOrigins))
 
 	systray.SetTitle("Cronos Agent")
-	systray.SetTooltip("Cronos POS Agent")
+	systray.SetTooltip("Cronos POS Agent v" + AgentVersion)
 
 	mStatus := systray.AddMenuItem("Cronos Agent: Operativo", "Estado del agente")
 	mStatus.Disable()
@@ -36,7 +44,7 @@ func onReady() {
 
 	srv := &http.Server{
 		Addr:    "127.0.0.1:9100",
-		Handler: NewRouter(cfg.APIToken),
+		Handler: NewRouter(cfg),
 	}
 
 	go func() {
@@ -45,6 +53,8 @@ func onReady() {
 			log.Fatalf("Error al iniciar servidor HTTP: %v", err)
 		}
 	}()
+
+	go CheckForUpdates(cfg.UpdateURL)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

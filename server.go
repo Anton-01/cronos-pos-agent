@@ -4,17 +4,18 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"runtime"
 )
 
-var allowedOrigins = map[string]bool{
-	"https://pos-app.tech":    true,
-	"http://localhost:3000":   true,
-	"http://localhost:5173":   true,
-	"http://127.0.0.1:3000":  true,
-	"http://127.0.0.1:5173":  true,
+func buildOriginsMap(origins []string) map[string]bool {
+	m := make(map[string]bool, len(origins))
+	for _, o := range origins {
+		m[o] = true
+	}
+	return m
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(allowedOrigins map[string]bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 
@@ -60,14 +61,16 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 	})
 }
 
-func NewRouter(apiToken string) http.Handler {
+func NewRouter(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/api/health", handleAPIHealth)
 	mux.HandleFunc("/api/printers", handlePrinters)
 	mux.HandleFunc("/api/print", handlePrint)
 
-	return corsMiddleware(authMiddleware(apiToken, mux))
+	originsMap := buildOriginsMap(cfg.AllowedOrigins)
+	return corsMiddleware(originsMap, authMiddleware(cfg.APIToken, mux))
 }
 
 func handlePrinters(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +158,43 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ok",
 		"service": "cronos-pos-agent",
-		"version": "0.1.0",
+		"version": AgentVersion,
 	})
+}
+
+type HealthResponse struct {
+	Status       string        `json:"status"`
+	Version      string        `json:"version"`
+	Platform     string        `json:"platform"`
+	MemoryMB     float64       `json:"memory_mb"`
+	AllocMB      float64       `json:"alloc_mb"`
+	NumGoroutine int           `json:"num_goroutines"`
+	Printers     []PrinterInfo `json:"printers"`
+	PrinterCount int           `json:"printer_count"`
+}
+
+func handleAPIHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
+	printers, _ := discoverPrinters()
+
+	resp := HealthResponse{
+		Status:       "ok",
+		Version:      AgentVersion,
+		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
+		MemoryMB:     float64(mem.Sys) / 1024 / 1024,
+		AllocMB:      float64(mem.Alloc) / 1024 / 1024,
+		NumGoroutine: runtime.NumGoroutine(),
+		Printers:     printers,
+		PrinterCount: len(printers),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
