@@ -21,3 +21,8 @@ type QueueInfo struct {
 	Status      string     `json:"status"`
 	Jobs        []PrintJob `json:"jobs,omitempty"`
 }
+
+type PDFPrintRequest struct {
+	PrinterName string `json:"printer_name"`
+	PDFData     string `json:"pdf_data"`
+}

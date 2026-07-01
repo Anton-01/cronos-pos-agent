@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 6: Suite Enterprise e Instalador Windows** — Completado
+**Fase 7: Conversión Gráfica y Soporte PDF** — Completado
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales).
 
 ## Arquitectura
 
@@ -23,6 +23,8 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Self-healing | `tasklist`/`pgrep` + `os.Process.Kill` | Eliminación de instancias huérfanas |
 | Printers (Win) | `github.com/alexbrainman/printer` | Acceso al Windows Print Spooler via syscall |
 | Printers (Mac) | `lpstat -a` / `lp -d -o raw` (stdlib `os/exec`) | Descubrimiento e impresión CUPS nativa |
+| PDF Print (Win) | `ShellExecuteW` via `syscall` + `shell32.dll` | Impresión silenciosa de PDF usando el verbo "print" del sistema |
+| PDF Print (Mac) | `lp -d` (stdlib `os/exec`) | CUPS maneja PDF nativamente sin conversión |
 | Cola (Win) | PowerShell `Get-PrintJob` | Lectura nativa del Spooler sin CGO |
 | Cola (Mac) | `lpstat -W not-completed -o` | Consulta CUPS nativa de trabajos pendientes |
 | Build Tags | `//go:build windows` / `//go:build darwin` | Compilación condicional por plataforma |
@@ -37,8 +39,8 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 ```
 cronos-pos-agent/
 ├── main.go              # Entry point: flags CLI, self-healing, systray, goroutines
-├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (5 endpoints)
-├── config.go            # Carga/generación de config.json, constante AgentVersion (1.2.0)
+├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (6 endpoints)
+├── config.go            # Carga/generación de config.json, constante AgentVersion (1.3.0)
 ├── network.go           # ResolvePort: fallback dinámico de puertos con scan
 ├── certs.go             # GenerateCerts: RSA 2048 + X.509 autofirmado nativo
 ├── logger.go            # RotatingLogger: escritura a archivo con rotación 10MB/3 backups
@@ -160,7 +162,7 @@ ISCC.exe installer/setup.iss
 ### Instalación silenciosa por línea de comandos
 
 ```bash
-CronosAgentSetup-1.2.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+CronosAgentSetup-1.3.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 - `/VERYSILENT`: Sin interfaz gráfica
@@ -194,6 +196,7 @@ Base: `http://127.0.0.1:{port}` (puerto dinámico, default 9100)
 | `GET` | `/api/printers` | Si | Lista impresoras instaladas en el SO |
 | `GET` | `/api/printers/queue` | Si | Cola de impresión de una impresora específica |
 | `POST` | `/api/print` | Si | Envía datos RAW (ESC/POS) a una impresora |
+| `POST` | `/api/print/pdf` | Si | Imprime un archivo PDF en una impresora convencional |
 
 ## Dependencias Externas
 
@@ -229,9 +232,9 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc \
 # 2. Generar instalador (ejecutar en Windows)
 ISCC.exe installer/setup.iss
 
-# 3. Resultado: installer/Output/CronosAgentSetup-1.2.0.exe
+# 3. Resultado: installer/Output/CronosAgentSetup-1.3.0.exe
 # 4. Despliegue silencioso en cajas de cobro:
-#    CronosAgentSetup-1.2.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+#    CronosAgentSetup-1.3.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 ## Fases — Historial Completo
@@ -247,6 +250,95 @@ ISCC.exe installer/setup.iss
 - ~~Generación nativa de certificados SSL (`--generate-certs`)~~ ✓
 - ~~Instalador silencioso Windows (Inno Setup)~~ ✓
 - ~~Campo `port` en config.json~~ ✓
+
+### Fase 7: Conversión Gráfica y Soporte PDF ✓
+- ~~Endpoint `POST /api/print/pdf` para impresión de documentos PDF~~ ✓
+- ~~Impresión nativa de PDF en macOS via CUPS (`lp -d`)~~ ✓
+- ~~Impresión silenciosa de PDF en Windows via `ShellExecuteW`~~ ✓
+- ~~Tipo `PDFPrintRequest` en `printer.go`~~ ✓
+- ~~Versión del agente actualizada a 1.3.0~~ ✓
+
+## Endpoint `POST /api/print/pdf` — Detalle Técnico
+
+### Request
+
+```
+POST /api/print/pdf
+Header: X-Cronos-Agent-Token: <token>
+Content-Type: application/json
+```
+
+```json
+{
+  "printer_name": "Nombre_Impresora_Oficina",
+  "pdf_data": "JVBERi0xLjQKMS... (Base64 del archivo PDF)"
+}
+```
+
+### Respuesta exitosa (200)
+
+```json
+{
+  "status": "ok",
+  "message": "PDF enviado a la impresora correctamente"
+}
+```
+
+### Errores
+
+| Código | Causa |
+|---|---|
+| 400 | JSON inválido, campos vacíos, o Base64 malformado |
+| 401 | Token de autenticación ausente o inválido |
+| 405 | Método HTTP distinto a POST |
+| 500 | Error creando archivo temporal, o el SO rechazó la orden de impresión |
+
+### Flujo interno
+
+1. El handler decodifica el Base64 de `pdf_data` a bytes
+2. Crea un archivo temporal seguro (`os.CreateTemp`) con extensión `.pdf`
+3. Escribe los bytes al archivo temporal
+4. Invoca la función `printPDF()` específica de la plataforma (build tags)
+5. El archivo temporal se elimina con `defer os.Remove()` tras enviar a la cola
+
+### Implementación por plataforma
+
+#### macOS (CUPS)
+
+CUPS maneja PDF de forma nativa sin conversión. Se ejecuta:
+
+```
+lp -d "Nombre_Impresora" /ruta/archivo_temporal.pdf
+```
+
+No se usa la flag `-o raw` (a diferencia del endpoint ESC/POS) porque CUPS debe procesar el PDF a través de sus filtros de renderizado para enviarlo como datos rasterizados a la impresora.
+
+#### Windows (ShellExecuteW)
+
+Las impresoras estándar de Windows no aceptan datos PDF crudos a través del Spooler (a diferencia de las impresoras térmicas con ESC/POS RAW). El PDF debe pasar por el subsistema de impresión del sistema operativo.
+
+**Mecanismo:** Se utiliza la API nativa `ShellExecuteW` de `shell32.dll` a través del paquete `syscall` de Go:
+
+```go
+shell32 := syscall.NewLazyDLL("shell32.dll")
+shellExecute := shell32.NewProc("ShellExecuteW")
+ret, _, _ := shellExecute.Call(
+    0,                                    // hwnd: sin ventana padre
+    uintptr(unsafe.Pointer(verbPtr)),     // lpOperation: "print"
+    uintptr(unsafe.Pointer(filePtr)),     // lpFile: ruta al PDF temporal
+    uintptr(unsafe.Pointer(paramsPtr)),   // lpParameters: /p /h "impresora"
+    0,                                    // lpDirectory: nil
+    0,                                    // nShowCmd: SW_HIDE (oculto)
+)
+```
+
+**¿Por qué `ShellExecuteW`?**
+
+- El verbo `"print"` delega la impresión al programa asociado a archivos `.pdf` en el registro de Windows (Adobe Acrobat, Foxit Reader, SumatraPDF, Microsoft Edge, etc.)
+- `SW_HIDE` (valor `0`) asegura que no se levante ninguna interfaz gráfica visible
+- El valor de retorno `> 32` indica éxito; valores `<= 32` son códigos de error de Windows
+- No requiere CGO ni dependencias externas adicionales — usa `syscall` y `unsafe` de la stdlib
+- Compatible con cualquier lector PDF instalado en el sistema, ya que Windows mantiene la asociación de archivos en `HKEY_CLASSES_ROOT\.pdf`
 
 ### Pendiente (fuera de scope actual)
 - Comunicación bidireccional (WebSocket/SSE)

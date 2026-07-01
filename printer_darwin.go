@@ -99,6 +99,27 @@ func queryPrintQueue(printerName string) (QueueInfo, error) {
 	}, nil
 }
 
+func printPDF(printerName string, pdfBytes []byte) error {
+	tmpFile, err := os.CreateTemp("", "cronos-pdf-*.pdf")
+	if err != nil {
+		return fmt.Errorf("error creando archivo temporal PDF: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(pdfBytes); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("error escribiendo PDF al archivo temporal: %w", err)
+	}
+	tmpFile.Close()
+
+	out, err := exec.Command("lp", "-d", printerName, tmpFile.Name()).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("error enviando PDF a impresora '%s': %w (salida: %s)", printerName, err, string(out))
+	}
+
+	return nil
+}
+
 func killOrphanInstances() {
 	currentPID := os.Getpid()
 

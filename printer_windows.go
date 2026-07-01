@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
+	"unsafe"
 
 	"github.com/alexbrainman/printer"
 	"golang.org/x/sys/windows/registry"
@@ -53,6 +55,43 @@ func rawPrint(printerName string, data []byte) error {
 
 	if err := p.EndDocument(); err != nil {
 		return fmt.Errorf("error al finalizar documento: %w", err)
+	}
+
+	return nil
+}
+
+func printPDF(printerName string, pdfBytes []byte) error {
+	tmpFile, err := os.CreateTemp("", "cronos-pdf-*.pdf")
+	if err != nil {
+		return fmt.Errorf("error creando archivo temporal PDF: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(pdfBytes); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("error escribiendo PDF al archivo temporal: %w", err)
+	}
+	tmpFile.Close()
+
+	verbPtr, _ := syscall.UTF16PtrFromString("print")
+	filePtr, _ := syscall.UTF16PtrFromString(tmpFile.Name())
+	printerParam := fmt.Sprintf(`/p /h "%s"`, printerName)
+	paramsPtr, _ := syscall.UTF16PtrFromString(printerParam)
+
+	shell32 := syscall.NewLazyDLL("shell32.dll")
+	shellExecute := shell32.NewProc("ShellExecuteW")
+
+	ret, _, _ := shellExecute.Call(
+		0,
+		uintptr(unsafe.Pointer(verbPtr)),
+		uintptr(unsafe.Pointer(filePtr)),
+		uintptr(unsafe.Pointer(paramsPtr)),
+		0,
+		0, // SW_HIDE
+	)
+
+	if ret <= 32 {
+		return fmt.Errorf("ShellExecuteW falló con código %d para impresora '%s'", ret, printerName)
 	}
 
 	return nil

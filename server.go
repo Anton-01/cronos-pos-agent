@@ -71,6 +71,7 @@ func NewRouter(cfg Config) http.Handler {
 	mux.HandleFunc("/api/printers", handlePrinters)
 	mux.HandleFunc("/api/printers/queue", handlePrinterQueue)
 	mux.HandleFunc("/api/print", handlePrint)
+	mux.HandleFunc("/api/print/pdf", handlePrintPDF)
 
 	originsMap := buildOriginsMap(cfg.AllowedOrigins)
 	return corsMiddleware(originsMap, authMiddleware(cfg.APIToken, mux))
@@ -223,5 +224,59 @@ func handlePrint(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ok",
 		"message": "Documento enviado a la impresora correctamente",
+	})
+}
+
+func handlePrintPDF(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req PDFPrintRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "JSON inválido en el cuerpo de la petición",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if req.PrinterName == "" || req.PDFData == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Los campos 'printer_name' y 'pdf_data' son obligatorios",
+		})
+		return
+	}
+
+	pdfBytes, err := base64.StdEncoding.DecodeString(req.PDFData)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "El campo 'pdf_data' no es Base64 válido",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if err := printPDF(req.PrinterName, pdfBytes); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "Error al imprimir el PDF en la impresora especificada",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "PDF enviado a la impresora correctamente",
 	})
 }
