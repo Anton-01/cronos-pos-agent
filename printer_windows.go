@@ -17,6 +17,23 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// createNoWindow es la bandera CREATE_NO_WINDOW de la API de Windows. Evita que
+// cualquier subproceso (PowerShell, tasklist, etc.) levante una ventana de
+// consola visible que provoque parpadeos en pantalla.
+const createNoWindow = 0x08000000
+
+// hiddenCommand construye un *exec.Cmd con SysProcAttr configurado para ejecutar
+// el subproceso de forma totalmente oculta (sin ventana de consola). Se usa en
+// TODAS las invocaciones nativas de Windows para garantizar arranque silencioso.
+func hiddenCommand(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow,
+	}
+	return cmd
+}
+
 func discoverPrinters() ([]PrinterInfo, error) {
 	names, err := printer.ReadNames()
 	if err != nil {
@@ -103,7 +120,7 @@ func queryPrintQueue(printerName string) (QueueInfo, error) {
 		printerName,
 	)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", psCmd).CombinedOutput()
+	out, err := hiddenCommand("powershell", "-NoProfile", "-Command", psCmd).CombinedOutput()
 	if err != nil {
 		return QueueInfo{}, fmt.Errorf("error consultando cola de impresión: %w (salida: %s)", err, string(out))
 	}
@@ -184,7 +201,13 @@ func enableAutostart() error {
 	}
 	defer key.Close()
 
-	if err := key.SetStringValue(registryValueName, exePath); err != nil {
+	// Se encierra la ruta entre comillas dobles para que Windows la interprete
+	// correctamente aunque contenga espacios (ej. "C:\Program Files\...\agent.exe").
+	// Sin las comillas, Windows trunca la ruta en el primer espacio y el
+	// auto-arranque falla silenciosamente.
+	quotedPath := fmt.Sprintf(`"%s"`, exePath)
+
+	if err := key.SetStringValue(registryValueName, quotedPath); err != nil {
 		return fmt.Errorf("no se pudo escribir en el registro: %w", err)
 	}
 	return nil
@@ -193,7 +216,7 @@ func enableAutostart() error {
 func killOrphanInstances() {
 	currentPID := os.Getpid()
 
-	out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq cronos-pos-agent.exe", "/FO", "CSV", "/NH").CombinedOutput()
+	out, _ := hiddenCommand("tasklist", "/FI", "IMAGENAME eq cronos-pos-agent.exe", "/FO", "CSV", "/NH").CombinedOutput()
 
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
