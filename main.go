@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/getlantern/systray"
 )
 
@@ -65,6 +66,8 @@ func onReady() {
 	autostartEnabled := isAutostartEnabled()
 	mAutostart := systray.AddMenuItemCheckbox("Iniciar con el Sistema", "Iniciar automáticamente con el sistema", autostartEnabled)
 
+	mCopyToken := systray.AddMenuItem("Copiar Token de Seguridad", "Copia el token del agente al portapapeles")
+
 	systray.AddSeparator()
 
 	mQuit := systray.AddMenuItem("Salir", "Cerrar el agente")
@@ -101,6 +104,8 @@ func onReady() {
 					}
 					mAutostart.Check()
 				}
+			case <-mCopyToken.ClickedCh:
+				copyTokenToClipboard()
 			case <-mQuit.ClickedCh:
 				systray.Quit()
 			case <-sigChan:
@@ -108,6 +113,29 @@ func onReady() {
 			}
 		}
 	}()
+}
+
+// copyTokenToClipboard lee el api_token guardado en config.json y lo copia al
+// portapapeles del sistema operativo usando la librería multiplataforma
+// github.com/atotto/clipboard (pbcopy en macOS, API nativa en Windows).
+func copyTokenToClipboard() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		log.Printf("Error leyendo config.json para copiar el token: %v", err)
+		return
+	}
+
+	if cfg.APIToken == "" {
+		log.Println("No hay token disponible en config.json para copiar")
+		return
+	}
+
+	if err := clipboard.WriteAll(cfg.APIToken); err != nil {
+		log.Printf("Error copiando el token al portapapeles: %v", err)
+		return
+	}
+
+	log.Println("Token copiado al portapapeles")
 }
 
 func onExit() {

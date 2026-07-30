@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 7: Conversión Gráfica y Soporte PDF** — Completado
+**Fase 8: Silenciamiento de Consolas, Token al Portapapeles y Auto-arranque Robusto** — Completado
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas).
 
 ## Arquitectura
 
@@ -26,6 +26,8 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | PDF Print (Win) | `ShellExecuteW` via `syscall` + `shell32.dll` | Impresión silenciosa de PDF usando el verbo "print" del sistema |
 | PDF Print (Mac) | `lp -d` (stdlib `os/exec`) | CUPS maneja PDF nativamente sin conversión |
 | Cola (Win) | PowerShell `Get-PrintJob` | Lectura nativa del Spooler sin CGO |
+| Ocultación de consola (Win) | `SysProcAttr{HideWindow, CreationFlags: CREATE_NO_WINDOW}` | Elimina el parpadeo de PowerShell/tasklist en todos los subprocesos |
+| Copiar token (Systray) | `github.com/atotto/clipboard` | Portapapeles multiplataforma (pbcopy en macOS, API nativa en Windows) |
 | Cola (Mac) | `lpstat -W not-completed -o` | Consulta CUPS nativa de trabajos pendientes |
 | Build Tags | `//go:build windows` / `//go:build darwin` | Compilación condicional por plataforma |
 | Autostart (Win) | Registro de Windows `HKCU\...\Run` | Estándar de Windows para apps de usuario |
@@ -38,7 +40,7 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 
 ```
 cronos-pos-agent/
-├── main.go              # Entry point: flags CLI, self-healing, systray, goroutines
+├── main.go              # Entry point: flags CLI, self-healing, systray, copiar token, goroutines
 ├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (6 endpoints)
 ├── config.go            # Carga/generación de config.json, constante AgentVersion (1.3.0)
 ├── network.go           # ResolvePort: fallback dinámico de puertos con scan
@@ -204,6 +206,7 @@ Base: `http://127.0.0.1:{port}` (puerto dinámico, default 9100)
 |---|---|---|
 | `github.com/getlantern/systray` | v1.2.2 | Icono y menú en barra de tareas |
 | `github.com/alexbrainman/printer` | v0.0.0-20200912 | Windows Print Spooler |
+| `github.com/atotto/clipboard` | v0.1.4 | Copiar el token de seguridad al portapapeles del SO (multiplataforma) |
 | `golang.org/x/sys` | v0.1.0+ | Registro de Windows |
 
 ## Compilación para Producción
@@ -257,6 +260,59 @@ ISCC.exe installer/setup.iss
 - ~~Impresión silenciosa de PDF en Windows via `ShellExecuteW`~~ ✓
 - ~~Tipo `PDFPrintRequest` en `printer.go`~~ ✓
 - ~~Versión del agente actualizada a 1.3.0~~ ✓
+
+### Fase 8: Silenciamiento de Consolas, Token al Portapapeles y Auto-arranque Robusto ✓
+- ~~Inyección de `CREATE_NO_WINDOW` en todos los subprocesos de Windows (anti-parpadeo)~~ ✓
+- ~~Opción "Copiar Token de Seguridad" en el Systray~~ ✓
+- ~~Ruta del ejecutable entre comillas dobles en el registro de autostart (soporte de espacios)~~ ✓
+
+## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
+
+Los subprocesos nativos de Windows (`powershell` para `Get-PrintJob`, `tasklist` para self-healing) provocaban un parpadeo de ventana de consola/PowerShell cada vez que se consultaba la lista o la cola de impresoras. Para eliminarlo por completo se inyecta la bandera nativa `CREATE_NO_WINDOW` (`0x08000000`) junto con `HideWindow` en el `SysProcAttr` de **cada** invocación.
+
+En `printer_windows.go` se centraliza esto en un helper que sustituye a `exec.Command` en todas las llamadas de la plataforma:
+
+```go
+const createNoWindow = 0x08000000 // CREATE_NO_WINDOW
+
+func hiddenCommand(name string, args ...string) *exec.Cmd {
+    cmd := exec.Command(name, args...)
+    cmd.SysProcAttr = &syscall.SysProcAttr{
+        HideWindow:    true,
+        CreationFlags: createNoWindow,
+    }
+    return cmd
+}
+```
+
+Todo subproceso o comando nativo invocado por el agente (`powershell`, `tasklist`) pasa por `hiddenCommand`, garantizando que ninguna ventana de consola se levante en pantalla. macOS no requiere este tratamiento porque `lp`/`lpstat` no abren ventanas.
+
+## Copiar Token de Seguridad al Portapapeles (Systray)
+
+Se agregó el ítem de menú `mCopyToken` en `main.go`:
+
+```go
+mCopyToken := systray.AddMenuItem("Copiar Token de Seguridad", "Copia el token del agente al portapapeles")
+```
+
+Al hacer clic, la función `copyTokenToClipboard()`:
+
+1. Lee el `api_token` guardado en `config.json` (vía `LoadConfig()`).
+2. Copia la cadena al portapapeles del SO con la librería multiplataforma **`github.com/atotto/clipboard`** (`clipboard.WriteAll`) — usa `pbcopy` en macOS y la API nativa del portapapeles en Windows, sin comandos externos que abran ventanas.
+3. Registra en el log la confirmación discreta: `"Token copiado al portapapeles"`.
+
+Esto evita que el operador tenga que abrir manualmente `config.json` para copiar el token que el frontend necesita en el header `X-Cronos-Agent-Token`.
+
+## Auto-arranque Silencioso Garantizado (Windows)
+
+El valor escrito en `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` ahora encierra la ruta de `os.Executable()` entre comillas dobles:
+
+```go
+quotedPath := fmt.Sprintf(`"%s"`, exePath) // "C:\Ruta Con Espacios\cronos-pos-agent.exe"
+key.SetStringValue(registryValueName, quotedPath)
+```
+
+Sin las comillas, Windows trunca la ruta en el primer espacio (ej. `C:\Program Files\...`) y el auto-arranque falla silenciosamente al iniciar sesión. Combinado con el flag de compilación `-H=windowsgui` (sin ventana de consola del propio binario) y `CREATE_NO_WINDOW` en los subprocesos, el agente arranca de forma totalmente transparente y se aloja de inmediato en el System Tray sin mostrar ninguna consola.
 
 ## Endpoint `POST /api/print/pdf` — Detalle Técnico
 
