@@ -29,14 +29,23 @@ func discoverPrinters() ([]PrinterInfo, error) {
 	return printers, nil
 }
 
-func rawPrint(printerName string, data []byte) error {
+// rawPrint envía un ticket ESC/POS a CUPS. Igual que en Windows, el payload se
+// prepara antes con BuildESCPOSPayload para seleccionar la página de códigos del
+// hardware y transcodificar el texto UTF-8 a sus bytes, de modo que las vocales
+// acentuadas mayúsculas (Á É Í Ó Ú Ñ) se impriman correctamente.
+func rawPrint(printerName string, data []byte, enc EncodingOptions) error {
+	payload, err := BuildESCPOSPayload(data, enc)
+	if err != nil {
+		return err
+	}
+
 	tmpFile, err := os.CreateTemp("", "cronos-ticket-*.bin")
 	if err != nil {
 		return fmt.Errorf("error creando archivo temporal: %w", err)
 	}
 	defer os.Remove(tmpFile.Name())
 
-	if _, err := tmpFile.Write(data); err != nil {
+	if _, err := tmpFile.Write(payload); err != nil {
 		tmpFile.Close()
 		return fmt.Errorf("error escribiendo datos al archivo temporal: %w", err)
 	}
@@ -161,6 +170,11 @@ func enableAutostart() error {
 		return fmt.Errorf("no se pudo obtener la ruta del ejecutable: %w", err)
 	}
 
+	plistPath := launchAgentPlistPath()
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0755); err != nil {
+		return fmt.Errorf("no se pudo crear la carpeta de LaunchAgents: %w", err)
+	}
+
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -178,7 +192,7 @@ func enableAutostart() error {
 </dict>
 </plist>`, launchAgentLabel, exePath)
 
-	return os.WriteFile(launchAgentPlistPath(), []byte(plist), 0644)
+	return os.WriteFile(plistPath, []byte(plist), 0644)
 }
 
 func disableAutostart() error {

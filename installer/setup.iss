@@ -3,13 +3,27 @@
 ; Instalador silencioso para Windows (compatible con /VERYSILENT /SUPPRESSMSGBOXES)
 ;
 ; Compilar con: ISCC.exe setup.iss
-; Requiere: Inno Setup 6.x (https://jrsoftware.org/isinfo.php)
+; Requiere: Inno Setup 6.3+ (https://jrsoftware.org/isinfo.php)
+;
+; UBICACIÓN PERMANENTE (estilo QZ Tray)
+; -------------------------------------
+; El binario se instala SIEMPRE en una ruta fija del sistema, nunca en Descargas
+; ni en carpetas temporales:
+;
+;   * Instalación con privilegios de administrador -> C:\Program Files\CronosAgent
+;   * Instalación sin elevación                    -> C:\ProgramData\CronosAgent
+;
+; Ambas son ubicaciones que el agente reconoce como permanentes, de modo que no
+; se reubica a sí mismo al arrancar. Los datos de runtime (config.json, logs y
+; certificados) viven aparte, en %LOCALAPPDATA%\CronosAgent, porque Program Files
+; es de sólo lectura para un usuario estándar.
 ; =============================================================================
 
 #define AppName "Cronos POS Agent"
-#define AppVersion "1.2.0"
+#define AppVersion "1.4.0"
 #define AppPublisher "Cronos SaaS"
 #define AppExeName "cronos-pos-agent.exe"
+#define AppFolderName "CronosAgent"
 #define AppURL "https://pos-app.tech"
 
 [Setup]
@@ -18,13 +32,22 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
-DefaultDirName={localappdata}\CronosAgent
+DefaultDirName={code:PermanentInstallDir}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputBaseFilename=CronosAgentSetup-{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
-PrivilegesRequired=lowest
+
+; Se pide elevación para instalar en C:\Program Files. Si no hay credenciales de
+; administrador, Inno reintenta sin elevar y PermanentInstallDir cae a
+; C:\ProgramData\CronosAgent, que también es permanente y escribible sin admin.
+PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog commandline
+
+; El binario es amd64: sin esto {commonpf} apuntaría a "Program Files (x86)".
+ArchitecturesInstallIn64BitMode=x64compatible
+
 SetupIconFile=
 UninstallDisplayIcon={app}\{#AppExeName}
 CreateAppDir=yes
@@ -46,32 +69,67 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "..\build\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
-; Genera config.json con token de seguridad en el primer arranque
-Filename: "{app}\{#AppExeName}"; Parameters: "--generate-certs"; Flags: runhidden waituntilterminated
-; Lanza el agente en segundo plano inmediatamente después de instalar
-Filename: "{app}\{#AppExeName}"; Flags: nowait runhidden postinstall
+; Genera los certificados SSL en el directorio de datos del usuario que instala.
+; runasoriginaluser es imprescindible cuando el instalador corre elevado: sin él
+; el token y los certificados se escribirían en el perfil del administrador y no
+; en el del operador de la caja.
+Filename: "{app}\{#AppExeName}"; Parameters: "--generate-certs"; \
+  Flags: runhidden waituntilterminated runasoriginaluser
+; Lanza el agente en segundo plano. Al arrancar registra por sí mismo el
+; auto-arranque en HKCU con la ruta permanente entre comillas dobles.
+Filename: "{app}\{#AppExeName}"; Flags: nowait runhidden postinstall runasoriginaluser
 
 [Registry]
-; Auto-arranque silencioso con Windows (HKCU = sin permisos de admin)
+; Auto-arranque con Windows. La ruta va SIEMPRE entre comillas dobles: sin ellas
+; Windows trunca el comando en el primer espacio ("C:\Program Files\..." se lee
+; como "C:\Program") e ignora la entrada silenciosamente tras cada reinicio.
+;
+; Sólo se escribe en instalaciones sin elevación: cuando el instalador corre como
+; administrador, HKCU es la rama del administrador y no la del operador. En ese
+; caso es el propio agente quien registra la entrada en la rama correcta durante
+; su primer arranque (lanzado arriba con runasoriginaluser).
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
   ValueType: string; ValueName: "CronosPOSAgent"; \
-  ValueData: """{app}\{#AppExeName}"""; Flags: uninsdeletevalue
+  ValueData: """{app}\{#AppExeName}"""; Flags: uninsdeletevalue; \
+  Check: not IsAdminInstallMode
 
 [UninstallRun]
 ; Cierra el agente antes de desinstalar
 Filename: "taskkill"; Parameters: "/F /IM {#AppExeName}"; Flags: runhidden
+; Elimina la entrada de auto-arranque de la rama HKCU del operador real
+Filename: "{app}\{#AppExeName}"; Parameters: "--disable-autostart"; \
+  Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist
 
 [UninstallDelete]
-; Limpia archivos generados en runtime
+; Datos de runtime (ubicación actual, por usuario)
+Type: files; Name: "{localappdata}\{#AppFolderName}\config.json"
+Type: files; Name: "{localappdata}\{#AppFolderName}\cronos-agent.log"
+Type: files; Name: "{localappdata}\{#AppFolderName}\cronos-agent.log.*"
+Type: files; Name: "{localappdata}\{#AppFolderName}\private-key.pem"
+Type: files; Name: "{localappdata}\{#AppFolderName}\digital-certificate.txt"
+Type: dirifempty; Name: "{localappdata}\{#AppFolderName}"
+; Restos de instalaciones anteriores que guardaban los datos junto al binario
 Type: files; Name: "{app}\config.json"
 Type: files; Name: "{app}\cronos-agent.log"
 Type: files; Name: "{app}\cronos-agent.log.*"
 Type: files; Name: "{app}\private-key.pem"
 Type: files; Name: "{app}\digital-certificate.txt"
+Type: files; Name: "{app}\{#AppExeName}.old"
 Type: dirifempty; Name: "{app}"
 
 [Code]
-// Cierra instancias previas antes de actualizar
+// PermanentInstallDir elige la ruta fija definitiva del binario. Nunca depende
+// de dónde se ejecutó el instalador.
+function PermanentInstallDir(Param: String): String;
+begin
+  if IsAdminInstallMode then
+    Result := ExpandConstant('{commonpf}\{#AppFolderName}')
+  else
+    Result := ExpandConstant('{commonappdata}\{#AppFolderName}');
+end;
+
+// Cierra instancias previas antes de actualizar: Windows no permite sobrescribir
+// un ejecutable en uso.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;

@@ -22,6 +22,10 @@ import (
 // consola visible que provoque parpadeos en pantalla.
 const createNoWindow = 0x08000000
 
+// detachedProcess es la bandera DETACHED_PROCESS: el hijo relanzado desde la
+// ruta permanente sobrevive a la muerte del proceso que lo lanzó.
+const detachedProcess = 0x00000008
+
 // hiddenCommand construye un *exec.Cmd con SysProcAttr configurado para ejecutar
 // el subproceso de forma totalmente oculta (sin ventana de consola). Se usa en
 // TODAS las invocaciones nativas de Windows para garantizar arranque silencioso.
@@ -47,7 +51,18 @@ func discoverPrinters() ([]PrinterInfo, error) {
 	return printers, nil
 }
 
-func rawPrint(printerName string, data []byte) error {
+// rawPrint envía un ticket ESC/POS al spooler de Windows. Antes de escribir un
+// solo byte se prepara el payload con BuildESCPOSPayload: se antepone el comando
+// "ESC t n" que selecciona la página de códigos del hardware y se transcodifica
+// el texto UTF-8 a los bytes de esa página. Sin esto, la ticketera interpreta
+// cada byte del UTF-8 por separado y las vocales acentuadas mayúsculas
+// (Á É Í Ó Ú Ñ) salen impresas como pares de símbolos ilegibles.
+func rawPrint(printerName string, data []byte, enc EncodingOptions) error {
+	payload, err := BuildESCPOSPayload(data, enc)
+	if err != nil {
+		return err
+	}
+
 	p, err := printer.Open(printerName)
 	if err != nil {
 		return fmt.Errorf("no se pudo abrir la impresora '%s': %w", printerName, err)
@@ -62,7 +77,7 @@ func rawPrint(printerName string, data []byte) error {
 		return fmt.Errorf("error al iniciar página: %w", err)
 	}
 
-	if _, err := p.Write(data); err != nil {
+	if _, err := p.Write(payload); err != nil {
 		return fmt.Errorf("error al escribir datos ESC/POS: %w", err)
 	}
 
@@ -189,10 +204,37 @@ func isAutostartEnabled() bool {
 	return err == nil
 }
 
-func enableAutostart() error {
-	exePath, err := os.Executable()
+// autostartTargetPath devuelve la ruta que debe quedar escrita en el registro.
+// Siempre se prefiere la ubicación permanente del binario: si se registrara la
+// ruta del proceso en curso (Descargas, %TEMP%, un pendrive…), la entrada
+// quedaría apuntando a un archivo que desaparece y el auto-arranque fallaría
+// en el siguiente reinicio, que es justamente el fallo que se corrige.
+func autostartTargetPath() (string, error) {
+	exe, err := currentExePath()
+	if err == nil && isPermanentLocation(exe) {
+		return exe, nil
+	}
+	if installed, ok := installedExePath(); ok {
+		return installed, nil
+	}
 	if err != nil {
-		return fmt.Errorf("no se pudo obtener la ruta del ejecutable: %w", err)
+		return "", fmt.Errorf("no se pudo obtener la ruta del ejecutable: %w", err)
+	}
+	return exe, nil
+}
+
+// quotedRegistryPath encierra la ruta entre comillas dobles, tal y como exige
+// el registro de Windows: sin ellas el shell trunca el comando en el primer
+// espacio (`C:\Program Files\...` se lee como `C:\Program`) y la entrada se
+// ignora silenciosamente tras un reinicio o una actualización del sistema.
+func quotedRegistryPath(exePath string) string {
+	return fmt.Sprintf(`"%s"`, exePath)
+}
+
+func enableAutostart() error {
+	exePath, err := autostartTargetPath()
+	if err != nil {
+		return err
 	}
 
 	key, _, err := registry.CreateKey(registry.CURRENT_USER, registryKeyPath, registry.SET_VALUE)
@@ -201,16 +243,48 @@ func enableAutostart() error {
 	}
 	defer key.Close()
 
-	// Se encierra la ruta entre comillas dobles para que Windows la interprete
-	// correctamente aunque contenga espacios (ej. "C:\Program Files\...\agent.exe").
-	// Sin las comillas, Windows trunca la ruta en el primer espacio y el
-	// auto-arranque falla silenciosamente.
-	quotedPath := fmt.Sprintf(`"%s"`, exePath)
-
-	if err := key.SetStringValue(registryValueName, quotedPath); err != nil {
+	if err := key.SetStringValue(registryValueName, quotedRegistryPath(exePath)); err != nil {
 		return fmt.Errorf("no se pudo escribir en el registro: %w", err)
 	}
 	return nil
+}
+
+// EnsureAutostartRegistered repara la entrada de auto-arranque en cada arranque
+// del agente. Se ejecuta siempre porque el valor del registro puede haber
+// quedado obsoleto: apuntando a una carpeta ya borrada, a una versión antigua
+// instalada en otra ruta, o escrito sin comillas por un instalador anterior.
+//
+// Respeta la preferencia del usuario: si desmarcó "Iniciar con el Sistema" en
+// el systray, la entrada no se vuelve a crear.
+func EnsureAutostartRegistered() {
+	if !AutostartPreferred() {
+		return
+	}
+
+	exePath, err := autostartTargetPath()
+	if err != nil {
+		log.Printf("[autostart] No se pudo determinar la ruta a registrar: %v", err)
+		return
+	}
+	expected := quotedRegistryPath(exePath)
+
+	key, err := registry.OpenKey(registry.CURRENT_USER, registryKeyPath, registry.QUERY_VALUE)
+	if err == nil {
+		current, _, readErr := key.GetStringValue(registryValueName)
+		key.Close()
+		if readErr == nil && strings.EqualFold(strings.TrimSpace(current), expected) {
+			return // ya apunta a la ruta correcta y entrecomillada
+		}
+		if readErr == nil {
+			log.Printf("[autostart] Entrada obsoleta (%s), se reescribe a %s", current, expected)
+		}
+	}
+
+	if err := enableAutostart(); err != nil {
+		log.Printf("[autostart] No se pudo registrar el auto-arranque: %v", err)
+		return
+	}
+	log.Printf("[autostart] Auto-arranque registrado como %s", expected)
 }
 
 func killOrphanInstances() {
