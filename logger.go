@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	logFileName    = "cronos-agent.log"
-	logMaxBytes    = 10 * 1024 * 1024 // 10 MB
-	logMaxBackups  = 3
+	logFileName   = "cronos-agent.log"
+	logMaxBytes   = 10 * 1024 * 1024 // 10 MB
+	logMaxBackups = 3
 )
 
 type RotatingLogger struct {

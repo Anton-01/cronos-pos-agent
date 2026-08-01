@@ -18,10 +18,24 @@ var startTime time.Time
 
 func main() {
 	generateCerts := flag.Bool("generate-certs", false, "Genera certificados SSL (private-key.pem y digital-certificate.txt) y sale")
+	disableAutostartFlag := flag.Bool("disable-autostart", false, "Elimina el auto-arranque del sistema y sale (usado por el desinstalador)")
+	noInstall := flag.Bool("no-install", false, "No reubicar el binario a la ruta permanente (uso en desarrollo)")
+	relaunched := flag.Bool("relaunched", false, "Uso interno: el agente ya fue relanzado desde la ruta permanente")
 	flag.Parse()
 
 	if *generateCerts {
 		if err := GenerateCerts(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if *disableAutostartFlag {
+		if err := SetAutostartPreference(false); err != nil {
+			fmt.Fprintf(os.Stderr, "Advertencia: no se pudo guardar la preferencia: %v\n", err)
+		}
+		if err := disableAutostart(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -39,6 +53,21 @@ func main() {
 	log.Printf("Cronos POS Agent v%s iniciando...", AgentVersion)
 
 	killOrphanInstances()
+
+	// El binario debe vivir siempre en su ruta fija y permanente. Si se lanzó
+	// desde una carpeta volátil se copia allí, se relanza y esta instancia
+	// termina: así la entrada de auto-arranque nunca apunta a un archivo que
+	// pueda desaparecer. El flag --relaunched corta cualquier bucle.
+	if !*noInstall && !*relaunched {
+		if EnsurePermanentLocation() {
+			log.Println("Instancia temporal finalizada tras reubicar el agente")
+			return
+		}
+	}
+
+	// Repara la entrada de auto-arranque en cada arranque (ruta permanente y
+	// entre comillas dobles), salvo que el usuario la haya desactivado.
+	EnsureAutostartRegistered()
 
 	systray.Run(onReady, onExit)
 }
@@ -98,11 +127,13 @@ func onReady() {
 						log.Printf("Error desactivando auto-arranque: %v", err)
 					}
 					mAutostart.Uncheck()
+					persistAutostartPreference(false)
 				} else {
 					if err := enableAutostart(); err != nil {
 						log.Printf("Error activando auto-arranque: %v", err)
 					}
 					mAutostart.Check()
+					persistAutostartPreference(true)
 				}
 			case <-mCopyToken.ClickedCh:
 				copyTokenToClipboard()
@@ -113,6 +144,15 @@ func onReady() {
 			}
 		}
 	}()
+}
+
+// persistAutostartPreference guarda en config.json la decisión del usuario para
+// que EnsureAutostartRegistered no vuelva a crear la entrada del registro en el
+// siguiente arranque si la desactivó a propósito.
+func persistAutostartPreference(enabled bool) {
+	if err := SetAutostartPreference(enabled); err != nil {
+		log.Printf("Error guardando la preferencia de auto-arranque: %v", err)
+	}
 }
 
 // copyTokenToClipboard lee el api_token guardado en config.json y lo copia al

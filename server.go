@@ -210,7 +210,22 @@ func handlePrint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := rawPrint(req.PrinterName, rawBytes); err != nil {
+	// La página de códigos ESC/POS sale de config.json y puede sobrescribirse
+	// por ticket con los campos opcionales "code_page" y "transcode".
+	if req.CodePage != "" {
+		if _, _, err := ResolveCodePage(req.CodePage); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":   "Página de códigos ESC/POS no soportada",
+				"details": err.Error(),
+			})
+			return
+		}
+	}
+	enc := EncodingOptionsFor(req.CodePage, req.Transcode)
+
+	if err := rawPrint(req.PrinterName, rawBytes, enc); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
