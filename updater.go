@@ -14,14 +14,22 @@ type VersionInfo struct {
 	Mandatory     bool   `json:"mandatory"`
 }
 
-func CheckForUpdates(updateURL string) {
+// CheckForUpdates consulta la versión publicada al arrancar y cada 6 horas.
+// Termina en cuanto se cierra done (ver onExit), para no dejar una goroutine y
+// su ticker vivos mientras el agente se está cerrando.
+func CheckForUpdates(updateURL string, done <-chan struct{}) {
 	ticker := time.NewTicker(6 * time.Hour)
 	defer ticker.Stop()
 
 	checkOnce(updateURL)
 
-	for range ticker.C {
-		checkOnce(updateURL)
+	for {
+		select {
+		case <-ticker.C:
+			checkOnce(updateURL)
+		case <-done:
+			return
+		}
 	}
 }
 

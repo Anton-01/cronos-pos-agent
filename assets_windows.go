@@ -28,6 +28,19 @@ var appIconICO []byte
 //go:embed welcome_cat.png
 var welcomeCatPNG []byte
 
-// trayIcon devuelve los bytes del icono en el formato que exige el System Tray
-// de esta plataforma (.ico en Windows).
-func trayIcon() []byte { return appIconICO }
+// appIconGrayICO es el gato en gris: el agente ha arrancado pero su servidor
+// todavía no escucha. Estado neutro.
+//
+//go:embed app_icon_gray.ico
+var appIconGrayICO []byte
+
+// appIconGreenICO es el gato con el punto verde: el servidor HTTP está
+// escuchando y el agente acepta trabajos de impresión. Estado operativo.
+//
+//go:embed app_icon_green.ico
+var appIconGreenICO []byte
+
+// trayIconStarting y trayIconReady devuelven los bytes del icono de cada estado
+// en el formato que exige el System Tray de esta plataforma (.ico en Windows).
+func trayIconStarting() []byte { return appIconGrayICO }
+func trayIconReady() []byte    { return appIconGreenICO }

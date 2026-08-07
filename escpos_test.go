@@ -91,6 +91,19 @@ func TestTranscodeFallbackWhenCodePageLacksRune(t *testing.T) {
 	}
 }
 
+// El codificador de charmap devuelve error si el tramo contiene una runa que la
+// página no representa. Ese error no debe abortar el ticket: se recorre el tramo
+// runa a runa y se degrada sólo la que sobra.
+func TestTranscodeFallbackWithinTextRun(t *testing.T) {
+	// 'é' sí está en CP1252 (0xE9); 'Ω' no, y tampoco tiene equivalente ASCII.
+	got := transcodeToCodePage([]byte("Café Ω y 25 €"), codePageCP1252)
+	want := []byte{'C', 'a', 'f', 0xE9, ' ', '?', ' ', 'y', ' ', '2', '5', ' ', 0x80}
+
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
 func TestTranscodePreservesASCIIAndCommands(t *testing.T) {
 	// Comandos ESC/POS típicos: ESC @ (init), ESC a 1 (centrar), GS V 0 (corte).
 	input := []byte{0x1B, 0x40, 0x1B, 0x61, 0x01, 'T', 'O', 'T', 'A', 'L', 0x0A, 0x1D, 0x56, 0x00}

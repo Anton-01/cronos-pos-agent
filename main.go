@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -15,6 +19,24 @@ import (
 )
 
 var startTime time.Time
+
+// shutdownTimeout es lo que se espera a que terminen las peticiones en curso
+// antes de cerrar el servidor a la fuerza. Un ticket tarda milisegundos en
+// llegar al spooler; 5 segundos cubren de sobra el peor caso sin dejar colgado
+// al operador que acaba de pulsar "Salir".
+const shutdownTimeout = 5 * time.Second
+
+// httpServer guarda el servidor en marcha para poder cerrarlo desde onExit(),
+// que systray ejecuta en otra goroutine. Es atómico porque quien lo escribe
+// (onReady) y quien lo lee (onExit) son goroutines distintas.
+var httpServer atomic.Pointer[http.Server]
+
+// agentDone se cierra en onExit para que las goroutines de larga vida (polling
+// de actualizaciones, bucle del menú) terminen en vez de quedar colgadas.
+var (
+	agentDone = make(chan struct{})
+	exitOnce  sync.Once
+)
 
 func main() {
 	generateCerts := flag.Bool("generate-certs", false, "Genera certificados SSL (private-key.pem y digital-certificate.txt) y sale")
@@ -88,6 +110,17 @@ func main() {
 }
 
 func onReady() {
+	// Estado neutro desde el primer instante: el agente está vivo pero todavía
+	// no acepta trabajos. El icono (el gato tuxedo) va embebido en el
+	// ejecutable, no en un archivo junto a él, así que sobrevive a las
+	// actualizaciones, que sustituyen el .exe entero.
+	systray.SetIcon(trayIconStarting())
+	systray.SetTitle("Cronos Agent")
+	systray.SetTooltip(fmt.Sprintf("Cronos POS Agent v%s — iniciando…", AgentVersion))
+
+	mStatus := systray.AddMenuItem("Cronos Agent: Iniciando…", "Estado del agente")
+	mStatus.Disable()
+
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Fatalf("Error cargando configuración: %v", err)
@@ -100,16 +133,6 @@ func onReady() {
 	}
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-
-	// El icono (el gato tuxedo) va embebido en el ejecutable, no en un archivo
-	// junto a él: así sobrevive a las actualizaciones, que sustituyen el .exe
-	// entero. Sin esta llamada Windows dibuja el icono genérico de aplicación.
-	systray.SetIcon(trayIcon())
-	systray.SetTitle("Cronos Agent")
-	systray.SetTooltip(fmt.Sprintf("Cronos POS Agent v%s — :%d", AgentVersion, port))
-
-	mStatus := systray.AddMenuItem(fmt.Sprintf("Cronos Agent: Operativo (:%d)", port), "Estado del agente")
-	mStatus.Disable()
 
 	autostartEnabled := isAutostartEnabled()
 	mAutostart := systray.AddMenuItemCheckbox("Iniciar con el Sistema", "Iniciar automáticamente con el sistema", autostartEnabled)
@@ -125,14 +148,34 @@ func onReady() {
 		Handler: NewRouter(cfg),
 	}
 
+	// El puerto se abre aquí y no dentro de ListenAndServe: el icono verde debe
+	// significar "el socket está aceptando conexiones", no "hemos lanzado una
+	// goroutine que quizá lo consiga". Si el bind falla, el icono se queda gris
+	// y el motivo queda en el log.
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("Error abriendo el puerto %s: %v", addr, err)
+	}
+	httpServer.Store(srv)
+
 	go func() {
 		log.Printf("Servidor HTTP escuchando en http://%s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Error al iniciar servidor HTTP: %v", err)
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			// El servidor ha muerto sin que nadie lo cerrase: el agente ya no
+			// acepta tickets, así que el icono vuelve al estado neutro.
+			systray.SetIcon(trayIconStarting())
+			systray.SetTooltip(fmt.Sprintf("Cronos POS Agent v%s — detenido", AgentVersion))
+			mStatus.SetTitle("Cronos Agent: Detenido")
+			log.Printf("Servidor HTTP detenido: %v", err)
 		}
 	}()
 
-	go CheckForUpdates(cfg.UpdateURL)
+	// A partir de aquí el agente ya escucha: verde.
+	systray.SetIcon(trayIconReady())
+	systray.SetTooltip(fmt.Sprintf("Cronos POS Agent v%s — Operativo (:%d)", AgentVersion, port))
+	mStatus.SetTitle(fmt.Sprintf("Cronos Agent: Operativo (:%d)", port))
+
+	go CheckForUpdates(cfg.UpdateURL, agentDone)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -157,12 +200,57 @@ func onReady() {
 			case <-mCopyToken.ClickedCh:
 				copyTokenToClipboard()
 			case <-mQuit.ClickedCh:
+				log.Println("Salida solicitada desde el menú del System Tray")
+				systray.Quit() // systray llama a onExit(), que cierra el servidor
+			case sig := <-sigChan:
+				log.Printf("Señal %s recibida, cerrando el agente", sig)
 				systray.Quit()
-			case <-sigChan:
-				systray.Quit()
+			case <-agentDone:
+				// El agente ya se está cerrando: esta goroutine termina en vez
+				// de quedarse esperando en canales que nadie volverá a usar.
+				return
 			}
 		}
 	}()
+}
+
+// onExit lo invoca systray cuando el bucle de la bandeja termina: al pulsar
+// "Salir", al recibir SIGINT/SIGTERM o al cerrar la sesión de Windows. Es el
+// único punto de cierre del agente, así que aquí se liberan los recursos.
+func onExit() {
+	// sync.Once porque cerrar dos veces un canal entra en pánico: la salida
+	// puede llegar por el menú, por una señal o por el cierre de sesión de
+	// Windows, y no conviene depender de que systray las serialice.
+	exitOnce.Do(func() {
+		close(agentDone) // detiene el polling de actualizaciones y el bucle del menú
+		shutdownHTTPServer()
+		log.Println("Cronos Agent finalizado.")
+	})
+}
+
+// shutdownHTTPServer cierra ordenadamente el servidor HTTP y, con él, el socket
+// de escucha: sin esto el puerto podría quedar ocupado el tiempo que tarde el
+// sistema en reciclarlo y el siguiente arranque caería al puerto 9101, con el
+// frontend apuntando todavía al 9100.
+//
+// Shutdown() espera a que terminen las peticiones en curso —un ticket a medio
+// enviar al spooler no se corta por la mitad— con un límite de 5 segundos, tras
+// el cual se cierra a la fuerza. El Swap(nil) lo hace idempotente.
+func shutdownHTTPServer() {
+	srv := httpServer.Swap(nil)
+	if srv == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("El cierre ordenado no terminó a tiempo (%v), se fuerza", err)
+		srv.Close()
+		return
+	}
+	log.Println("Servidor HTTP cerrado y puerto liberado")
 }
 
 // persistAutostartPreference guarda en config.json la decisión del usuario para
@@ -195,8 +283,4 @@ func copyTokenToClipboard() {
 	}
 
 	log.Println("Token copiado al portapapeles")
-}
-
-func onExit() {
-	log.Println("Cronos Agent finalizado.")
 }
