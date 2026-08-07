@@ -36,15 +36,29 @@ type CodePage struct {
 // payload viaja al spooler byte por byte, tal cual lo envió el frontend.
 const codePageNone = "none"
 
-// defaultCodePage es la página por defecto para tickets en español. CP850
-// (Multilingual Latin-1) contiene las cinco vocales acentuadas mayúsculas
-// (Á É Í Ó Ú), la Ñ/ñ, la Ü/ü y los signos ¿ ¡ — que CP437, la página por
-// defecto de fábrica de la mayoría de ticketeras, NO incluye en mayúsculas.
-const defaultCodePage = "cp850"
+// defaultCodePage es la página por defecto para tickets en español.
+//
+// Desde la v1.5.0 es CP1252 (Windows Latin-1) y ya no CP850. Las dos contienen
+// las cinco vocales acentuadas mayúsculas, pero CP1252 tiene una ventaja
+// decisiva en una caja de cobro Windows: sus bytes coinciden exactamente con
+// los de Latin-1, que es lo que las ticketeras conectadas a Windows esperan por
+// defecto. Con CP850 el mismo texto se codifica en posiciones distintas
+// (`Á` = 0xB5 en CP850 frente a 0xC1 en CP1252), así que en cuanto el hardware
+// ignora o pierde la selección de página —tras un `ESC @`, un corte de
+// corriente o un reinicio del spooler— la `Á` sale impresa como el símbolo que
+// ocupe ese byte en la tabla activa (el caso "†nimo" en lugar de "Ánimo").
+const defaultCodePage = "cp1252"
 
 // supportedCodePages indexa las páginas soportadas por su nombre canónico.
 // Los valores de "n" siguen la tabla estándar de Epson ESC/POS, respetada por
-// la práctica totalidad de ticketeras compatibles del mercado.
+// la práctica totalidad de ticketeras compatibles del mercado:
+//
+//	ESC t 16 (0x10) -> WPC1252    ESC t 2  (0x02) -> PC850
+//	ESC t 19 (0x13) -> PC858      ESC t 0  (0x00) -> PC437
+//
+// Nótese que 0x13 es PC858 (CP850 + €) y NO CP1252: son páginas distintas
+// aunque ambas cubran el español. Un modelo con una numeración propia se
+// corrige sin recompilar con "escpos_code_page_id" en config.json.
 var supportedCodePages = map[string]CodePage{
 	"cp850":  {Name: "cp850", Selector: 0x02, Table: codePageCP850, Description: "PC850 Multilingual (Latin-1)"},
 	"cp858":  {Name: "cp858", Selector: 0x13, Table: codePageCP858, Description: "PC858 Euro (Latin-1 + €)"},
@@ -70,6 +84,21 @@ type EncodingOptions struct {
 	// Transcode indica si el texto UTF-8 debe convertirse a los bytes de la
 	// página de códigos. Si es false sólo se antepone el comando "ESC t n".
 	Transcode bool
+	// SelectorOverride sustituye el "n" de "ESC t n" por el valor indicado,
+	// manteniendo la tabla de transcodificación de CodePage. Es la válvula de
+	// escape para las ticketeras clónicas que numeran sus páginas de códigos
+	// de otra forma que el estándar de Epson: se ajusta en config.json sin
+	// recompilar el agente. nil = numeración estándar.
+	SelectorOverride *byte
+}
+
+// Selector devuelve el byte "n" que se enviará en "ESC t n" para esta página,
+// respetando el override de configuración si lo hay.
+func (o EncodingOptions) Selector(cp CodePage) byte {
+	if o.SelectorOverride != nil {
+		return *o.SelectorOverride
+	}
+	return cp.Selector
 }
 
 // ResolveCodePage normaliza el nombre recibido (config o petición) y devuelve
@@ -136,7 +165,7 @@ func BuildESCPOSPayload(data []byte, opts EncodingOptions) ([]byte, error) {
 		payload = transcodeToCodePage(payload, cp.Table)
 	}
 
-	return insertCodePageCommand(payload, cp.Selector), nil
+	return insertCodePageCommand(payload, opts.Selector(cp)), nil
 }
 
 // codePagePreambleScan limita la búsqueda de un "ESC t" propio a la cabecera del

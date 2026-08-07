@@ -44,10 +44,45 @@ func TestTranscodeCP1252(t *testing.T) {
 	}
 }
 
+// El caso exacto que fallaba en la caja de cobro: "Ánimo" salía impreso como
+// "†nimo". Con la configuración por defecto de la v1.5.0 el ticket debe abrir
+// con ESC t 16 (CP1252) y llevar la Á codificada como 0xC1.
+func TestBuildPayloadDefaultsToCP1252(t *testing.T) {
+	got, err := BuildESCPOSPayload([]byte("Ánimo"), EncodingOptions{Transcode: true})
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	want := []byte{0x1B, 0x74, 0x10, 0xC1, 'n', 'i', 'm', 'o'}
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// Las ticketeras clónicas que numeran sus páginas de códigos de otra forma se
+// corrigen desde config.json con escpos_code_page_id, sin recompilar: el "n"
+// del comando cambia pero la transcodificación sigue siendo la de CP1252.
+func TestBuildPayloadSelectorOverride(t *testing.T) {
+	selector := byte(0x13)
+	got, err := BuildESCPOSPayload([]byte("Á"), EncodingOptions{
+		CodePage:         "cp1252",
+		Transcode:        true,
+		SelectorOverride: &selector,
+	})
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	want := []byte{0x1B, 0x74, 0x13, 0xC1}
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
 // CP437 (la página de fábrica de la mayoría de ticketeras) sólo contiene É de
 // las cinco vocales acentuadas mayúsculas — de ahí el fallo de producción. Las
 // que no existen deben degradarse a su equivalente ASCII en vez de imprimirse
-// como basura; por eso el valor por defecto del agente es CP850 y no CP437.
+// como basura; por eso el valor por defecto del agente es CP1252 y no CP437.
 func TestTranscodeFallbackWhenCodePageLacksRune(t *testing.T) {
 	got := transcodeToCodePage([]byte("ÁÉÍÓÚ ñ"), codePageCP437)
 	want := []byte("A\x90IOU \xA4")
@@ -195,7 +230,7 @@ func TestResolveCodePage(t *testing.T) {
 		wantSelector byte
 		wantActive   bool
 	}{
-		{"", "cp850", 0x02, true},
+		{"", "cp1252", 0x10, true}, // sin nombre -> defaultCodePage (CP1252)
 		{"CP850", "cp850", 0x02, true},
 		{" 850 ", "cp850", 0x02, true},
 		{"cp858", "cp858", 0x13, true},

@@ -30,7 +30,7 @@ func agentDir() string {
 // volátiles (Descargas, %TEMP%) y el auto-arranque se rompía al desaparecer el
 // archivo. En macOS el LaunchAgent se reescribe con la ruta real en cada
 // arranque, que es la contramedida equivalente (ver EnsureAutostartRegistered).
-func EnsurePermanentLocation() bool { return false }
+func EnsurePermanentLocation(extraArgs ...string) bool { return false }
 
 // EnsureAutostartRegistered reescribe el LaunchAgent si falta o si su plist
 // apunta a una ruta distinta a la del binario en ejecución (por ejemplo tras
