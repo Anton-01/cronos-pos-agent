@@ -199,7 +199,11 @@ func migrateRuntimeData(fromDir string) {
 //
 // Devuelve true cuando ha relanzado el agente: el proceso actual debe terminar
 // para que no queden dos instancias compitiendo por el puerto.
-func EnsurePermanentLocation() bool {
+//
+// extraArgs son los flags del proceso actual que deben sobrevivir al relanzado
+// (hoy, --first-run: la ventana de bienvenida tiene que abrirla la instancia
+// definitiva, no la temporal que está a punto de terminar).
+func EnsurePermanentLocation(extraArgs ...string) bool {
 	exe, err := currentExePath()
 	if err != nil {
 		log.Printf("[install] No se pudo determinar la ruta del ejecutable: %v", err)
@@ -227,7 +231,7 @@ func EnsurePermanentLocation() bool {
 	// junto al binario de origen.
 	migrateRuntimeData(filepath.Dir(exe))
 
-	if err := relaunchFrom(target); err != nil {
+	if err := relaunchFrom(target, extraArgs...); err != nil {
 		log.Printf("[install] No se pudo relanzar desde la ruta permanente: %v", err)
 		return false
 	}
@@ -301,8 +305,8 @@ func copyFile(src, dst string) error {
 // relaunchFrom arranca el binario ya instalado en la ruta permanente, sin
 // ventana de consola y desligado del proceso actual. El flag --relaunched evita
 // cualquier posibilidad de bucle de reubicación.
-func relaunchFrom(exePath string) error {
-	cmd := exec.Command(exePath, "--relaunched")
+func relaunchFrom(exePath string, extraArgs ...string) error {
+	cmd := exec.Command(exePath, append([]string{"--relaunched"}, extraArgs...)...)
 	cmd.Dir = filepath.Dir(exePath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,

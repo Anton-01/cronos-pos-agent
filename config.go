@@ -7,15 +7,29 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
-const AgentVersion = "1.4.0"
+const AgentVersion = "1.5.0"
 
 // configFileName es el nombre del archivo de configuración dentro de agentDir().
 const configFileName = "config.json"
 
+// configSchemaVersion identifica la forma del config.json escrito por esta
+// versión del agente. Sirve para aplicar migraciones una sola vez sobre los
+// archivos ya existentes en las cajas de cobro, sin tocar el api_token.
+const configSchemaVersion = 2
+
+// legacyDefaultCodePage es la página que las versiones ≤ 1.4.0 escribían en el
+// config.json del primer arranque. Al no haberla elegido nadie, se migra al
+// nuevo valor por defecto (ver migrateConfigSchema).
+const legacyDefaultCodePage = "cp850"
+
 type Config struct {
+	// SchemaVersion es la versión del esquema de este archivo, no la del
+	// agente. Ausente (0) en los config.json escritos hasta la v1.4.0.
+	SchemaVersion  int      `json:"config_version"`
 	APIToken       string   `json:"api_token"`
 	AllowedOrigins []string `json:"allowed_origins"`
 	UpdateURL      string   `json:"update_url"`
@@ -26,6 +40,12 @@ type Config struct {
 	// ESCPOSTranscode activa la conversión de texto UTF-8 a los bytes de esa
 	// página de códigos. Puntero para distinguir "false" de "no configurado".
 	ESCPOSTranscode *bool `json:"escpos_transcode"`
+	// ESCPOSCodePageID sustituye el "n" del comando "ESC t n" por un valor
+	// concreto (0–255), manteniendo la tabla de transcodificación de
+	// ESCPOSCodePage. Sólo hace falta en ticketeras clónicas que numeran sus
+	// páginas de códigos de forma distinta al estándar de Epson. Ausente o
+	// null = numeración estándar.
+	ESCPOSCodePageID *int `json:"escpos_code_page_id,omitempty"`
 	// Autostart guarda la preferencia de arranque con el sistema. El agente
 	// repara la entrada del registro en cada arranque sólo si es true.
 	Autostart *bool `json:"autostart"`
@@ -103,6 +123,12 @@ func LoadConfig() (Config, error) {
 			needsWrite = true
 		}
 
+		if appConfig.SchemaVersion < configSchemaVersion {
+			migrateConfigSchema()
+			appConfig.SchemaVersion = configSchemaVersion
+			needsWrite = true
+		}
+
 		if needsWrite {
 			if err := saveConfig(configPath); err != nil {
 				configLoadErr = err
@@ -113,6 +139,22 @@ func LoadConfig() (Config, error) {
 	configMu.Lock()
 	defer configMu.Unlock()
 	return appConfig, configLoadErr
+}
+
+// migrateConfigSchema actualiza en sitio un config.json escrito por una versión
+// anterior del agente. Se ejecuta dentro de LoadConfig, una sola vez, y nunca
+// toca el api_token: perderlo obligaría a reconfigurar cada caja de cobro.
+//
+// v1 -> v2: la página de códigos ESC/POS pasa de CP850 a CP1252. El valor
+// "cp850" que hay en los archivos existentes no lo eligió ningún operador: lo
+// escribió el propio agente como valor por defecto en su primer arranque, así
+// que se migra. Una página distinta (cp858, cp437, none…) sí es una decisión
+// deliberada y se respeta.
+func migrateConfigSchema() {
+	if strings.EqualFold(strings.TrimSpace(appConfig.ESCPOSCodePage), legacyDefaultCodePage) {
+		appConfig.ESCPOSCodePage = defaultCodePage
+		log.Printf("[config] Página de códigos migrada de %s a %s", legacyDefaultCodePage, defaultCodePage)
+	}
 }
 
 // SetAutostartPreference persiste en config.json si el usuario quiere que el
@@ -160,10 +202,23 @@ func EncodingOptionsFor(reqCodePage string, reqTranscode *bool) EncodingOptions 
 		if cfg.ESCPOSTranscode != nil {
 			opts.Transcode = *cfg.ESCPOSTranscode
 		}
+		if cfg.ESCPOSCodePageID != nil {
+			id := *cfg.ESCPOSCodePageID
+			if id < 0 || id > 255 {
+				log.Printf("[escpos] escpos_code_page_id=%d fuera de rango (0–255), se ignora", id)
+			} else {
+				selector := byte(id)
+				opts.SelectorOverride = &selector
+			}
+		}
 	}
 
 	if reqCodePage != "" {
 		opts.CodePage = reqCodePage
+		// El selector forzado describe cómo numera la ticketera UNA página
+		// concreta, la configurada. Si el ticket pide otra, ese número deja de
+		// ser válido y se vuelve a la numeración estándar.
+		opts.SelectorOverride = nil
 	}
 	if reqTranscode != nil {
 		opts.Transcode = *reqTranscode

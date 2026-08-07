@@ -52,11 +52,19 @@ func discoverPrinters() ([]PrinterInfo, error) {
 }
 
 // rawPrint envía un ticket ESC/POS al spooler de Windows. Antes de escribir un
-// solo byte se prepara el payload con BuildESCPOSPayload: se antepone el comando
-// "ESC t n" que selecciona la página de códigos del hardware y se transcodifica
-// el texto UTF-8 a los bytes de esa página. Sin esto, la ticketera interpreta
-// cada byte del UTF-8 por separado y las vocales acentuadas mayúsculas
-// (Á É Í Ó Ú Ñ) salen impresas como pares de símbolos ilegibles.
+// solo byte se prepara el payload con BuildESCPOSPayload, que abre SIEMPRE el
+// flujo de impresión con la selección de tabla de caracteres:
+//
+//	1B 74 10   ESC t 16 -> Code Page 1252 (Windows Latin-1), el valor por
+//	                      defecto desde la v1.5.0
+//
+// y transcodifica después el texto UTF-8 a los bytes de esa misma página. Sin
+// las dos cosas la ticketera interpreta cada byte del UTF-8 por separado contra
+// la tabla que tenga activa y las vocales acentuadas mayúsculas salen como
+// símbolos sueltos: es el fallo de "†nimo" en lugar de "Ánimo".
+//
+// El comando se inyecta detrás de un "ESC @" inicial si el payload lo trae,
+// porque ese comando reinicia la impresora y restauraría la página de fábrica.
 func rawPrint(printerName string, data []byte, enc EncodingOptions) error {
 	payload, err := BuildESCPOSPayload(data, enc)
 	if err != nil {

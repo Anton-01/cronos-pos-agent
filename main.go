@@ -21,6 +21,7 @@ func main() {
 	disableAutostartFlag := flag.Bool("disable-autostart", false, "Elimina el auto-arranque del sistema y sale (usado por el desinstalador)")
 	noInstall := flag.Bool("no-install", false, "No reubicar el binario a la ruta permanente (uso en desarrollo)")
 	relaunched := flag.Bool("relaunched", false, "Uso interno: el agente ya fue relanzado desde la ruta permanente")
+	firstRun := flag.Bool("first-run", false, "Muestra la ventana de bienvenida post-instalación (lo usa el instalador al terminar)")
 	flag.Parse()
 
 	if *generateCerts {
@@ -59,7 +60,14 @@ func main() {
 	// termina: así la entrada de auto-arranque nunca apunta a un archivo que
 	// pueda desaparecer. El flag --relaunched corta cualquier bucle.
 	if !*noInstall && !*relaunched {
-		if EnsurePermanentLocation() {
+		// El flag de bienvenida viaja con el relanzado: si el instalador acaba
+		// de lanzar el binario desde una carpeta temporal, la ventana debe
+		// abrirla la instancia definitiva, no la que está a punto de morir.
+		var passthrough []string
+		if *firstRun {
+			passthrough = append(passthrough, "--first-run")
+		}
+		if EnsurePermanentLocation(passthrough...) {
 			log.Println("Instancia temporal finalizada tras reubicar el agente")
 			return
 		}
@@ -68,6 +76,13 @@ func main() {
 	// Repara la entrada de auto-arranque en cada arranque (ruta permanente y
 	// entre comillas dobles), salvo que el usuario la haya desactivado.
 	EnsureAutostartRegistered()
+
+	// La ventana de bienvenida corre en su propia goroutine con su propio bucle
+	// de mensajes: systray.Run() se queda con el hilo principal y no volvería
+	// hasta que el usuario cierre el agente.
+	if *firstRun {
+		go ShowFirstRunWelcome()
+	}
 
 	systray.Run(onReady, onExit)
 }
@@ -86,6 +101,10 @@ func onReady() {
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
+	// El icono (el gato tuxedo) va embebido en el ejecutable, no en un archivo
+	// junto a él: así sobrevive a las actualizaciones, que sustituyen el .exe
+	// entero. Sin esta llamada Windows dibuja el icono genérico de aplicación.
+	systray.SetIcon(trayIcon())
 	systray.SetTitle("Cronos Agent")
 	systray.SetTooltip(fmt.Sprintf("Cronos POS Agent v%s — :%d", AgentVersion, port))
 

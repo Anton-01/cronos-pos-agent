@@ -20,7 +20,7 @@
 ; =============================================================================
 
 #define AppName "Cronos POS Agent"
-#define AppVersion "1.4.0"
+#define AppVersion "1.5.0"
 #define AppPublisher "Cronos SaaS"
 #define AppExeName "cronos-pos-agent.exe"
 #define AppFolderName "CronosAgent"
@@ -48,7 +48,11 @@ PrivilegesRequiredOverridesAllowed=dialog commandline
 ; El binario es amd64: sin esto {commonpf} apuntaría a "Program Files (x86)".
 ArchitecturesInstallIn64BitMode=x64compatible
 
-SetupIconFile=
+; Icono del instalador: el mismo gato tuxedo que lleva el agente en la bandeja.
+; El ejecutable ya lo trae como recurso Win32 (rsrc_windows_amd64.syso), así que
+; UninstallDisplayIcon apuntando al .exe muestra el gato en "Aplicaciones
+; instaladas" sin necesidad de copiar el .ico junto al binario.
+SetupIconFile=..\app_icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 CreateAppDir=yes
 CloseApplications=force
@@ -75,9 +79,23 @@ Source: "..\build\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; en el del operador de la caja.
 Filename: "{app}\{#AppExeName}"; Parameters: "--generate-certs"; \
   Flags: runhidden waituntilterminated runasoriginaluser
-; Lanza el agente en segundo plano. Al arrancar registra por sí mismo el
-; auto-arranque en HKCU con la ruta permanente entre comillas dobles.
-Filename: "{app}\{#AppExeName}"; Flags: nowait runhidden postinstall runasoriginaluser
+; Lanza el agente al terminar la barra de progreso. Al arrancar registra por sí
+; mismo el auto-arranque en HKCU con la ruta permanente entre comillas dobles.
+;
+; En una instalación atendida se le pasa --first-run: el agente arranca normal
+; (bandeja + servidor HTTP) y además abre UNA sola vez la ventana que confirma
+; al operador que la instalación ha ido bien. Sin ella la instalación termina
+; sin ninguna señal visible, porque el binario es -H=windowsgui y sólo deja un
+; icono de 16 px en la bandeja.
+;
+; Aquí no se pone runhidden: esa bandera es la que impediría que la ventana de
+; bienvenida llegara a verse.
+Filename: "{app}\{#AppExeName}"; Parameters: "--first-run"; \
+  Flags: nowait postinstall runasoriginaluser; Check: not WizardSilent
+; Despliegue silencioso en cajas de cobro (/VERYSILENT): mismo arranque, sin
+; ventana de bienvenida — no hay nadie delante de la pantalla que la cierre.
+Filename: "{app}\{#AppExeName}"; \
+  Flags: nowait runhidden postinstall runasoriginaluser; Check: WizardSilent
 
 [Registry]
 ; Auto-arranque con Windows. La ruta va SIEMPRE entre comillas dobles: sin ellas
@@ -107,6 +125,9 @@ Type: files; Name: "{localappdata}\{#AppFolderName}\cronos-agent.log"
 Type: files; Name: "{localappdata}\{#AppFolderName}\cronos-agent.log.*"
 Type: files; Name: "{localappdata}\{#AppFolderName}\private-key.pem"
 Type: files; Name: "{localappdata}\{#AppFolderName}\digital-certificate.txt"
+; Marcador de la ventana de bienvenida: si no se borra, una reinstalación no
+; volvería a confirmarle al operador que todo ha ido bien.
+Type: files; Name: "{localappdata}\{#AppFolderName}\welcome-shown"
 Type: dirifempty; Name: "{localappdata}\{#AppFolderName}"
 ; Restos de instalaciones anteriores que guardaban los datos junto al binario
 Type: files; Name: "{app}\config.json"

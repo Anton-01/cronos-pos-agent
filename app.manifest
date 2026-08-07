@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Manifiesto Win32 del agente, embebido en el ejecutable junto al icono
+  (ver rsrc_windows_amd64.syso).
+
+  * requestedExecutionLevel asInvoker: el agente NUNCA pide elevación. Corre
+    como el operador de la caja, que es de quien son HKCU (auto-arranque) y
+    %LOCALAPPDATA% (config.json, token, certificados).
+
+  * Common Controls 6.0: sin esta dependencia el botón "Cerrar" de la ventana
+    de bienvenida se dibuja con el estilo clásico de Windows 95.
+
+  * No se declara compatibilidad con DPI a propósito: la ventana de bienvenida
+    usa medidas fijas en píxeles, así que en pantallas al 150% es preferible
+    que Windows escale la ventana entera a que la dibuje a un tercio de su
+    tamaño.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity
+      type="win32"
+      name="CronosSaaS.CronosPOSAgent"
+      version="1.5.0.0"
+      processorArchitecture="amd64"/>
+  <description>Cronos POS Agent</description>
+
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+          type="win32"
+          name="Microsoft.Windows.Common-Controls"
+          version="6.0.0.0"
+          processorArchitecture="amd64"
+          publicKeyToken="6595b64144ccf1df"
+          language="*"/>
+    </dependentAssembly>
+  </dependency>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10/11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <!-- Windows 7 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+    </application>
+  </compatibility>
+</assembly>

@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 9: Persistencia Permanente estilo QZ Tray y Codificación de Acentos ESC/POS** — Completado
+**Fase 10: Pulido Final — CP1252, Icono Tuxedo Embebido y Bienvenida Post-Instalación** — Completado
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación).
 
 ## Arquitectura
 
@@ -36,7 +36,13 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Auto-reubicación (Win) | Copia + relanzado con `DETACHED_PROCESS` | Un binario lanzado desde Descargas/`%TEMP%` se instala solo en la ruta permanente |
 | Datos de runtime (Win) | `%LOCALAPPDATA%\CronosAgent\` | Program Files es de sólo lectura para el usuario estándar que ejecuta el agente |
 | Codificación ESC/POS | `ESC t n` + transcodificación UTF-8 → página de códigos | Las ticketeras no entienden UTF-8; CP437 (fábrica) ni siquiera contiene Á Í Ó Ú |
+| Página por defecto | **CP1252** (`ESC t 16` = `1B 74 10`) desde la v1.5.0 | Sus bytes son los de Latin-1, que es lo que espera una ticketera conectada a Windows. Con CP850 la `Á` viaja como `0xB5` y sale como otro símbolo en cuanto el hardware pierde la selección de página |
+| Numeración de páginas | `escpos_code_page_id` en `config.json` | Válvula de escape para clones que numeran sus tablas fuera del estándar Epson, sin recompilar |
 | Tablas de códigos | Generadas de los codecs cp850/cp858/cp1252/cp437 | Cero dependencias externas, valores verificados contra los codecs estándar |
+| Icono del agente | `//go:embed app_icon.ico` + `systray.SetIcon` | El binario se sobrescribe en cada actualización: un icono en archivo suelto se perdería |
+| Recursos Win32 | `rsrc_windows_amd64.syso` (icono + manifiesto) | Icono en Explorador/Alt+Tab y botones con estilo moderno (Common Controls 6) |
+| Ventana de bienvenida | Win32 nativo (`user32`/`gdi32` vía `syscall`) | Cero dependencias nuevas; `lxn/win` está sin mantenimiento y `fyne` exige CGO + OpenGL |
+| Ilustraciones | Generadas por código (`tools/genassets`) | Recursos reproducibles y auditables en vez de binarios opacos |
 | Logs | Rotación nativa con `RotatingLogger` | Sin dependencias externas, 10MB max, 3 backups |
 | Updates | Goroutine con polling cada 6h | Consulta JSON remoto |
 | Instalador | Inno Setup 6.3+ | Instalador silencioso estándar de Windows; pide admin para Program Files y cae a ProgramData si no lo hay |
@@ -47,7 +53,7 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 cronos-pos-agent/
 ├── main.go              # Entry point: flags CLI, self-healing, reubicación, systray, goroutines
 ├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (6 endpoints)
-├── config.go            # Carga/generación de config.json, AgentVersion (1.4.0), preferencias
+├── config.go            # Carga/generación de config.json, AgentVersion (1.5.0), migraciones de esquema
 ├── network.go           # ResolvePort: fallback dinámico de puertos con scan
 ├── certs.go             # GenerateCerts: RSA 2048 + X.509 autofirmado nativo
 ├── logger.go            # RotatingLogger: escritura a archivo con rotación 10MB/3 backups
@@ -55,11 +61,24 @@ cronos-pos-agent/
 ├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
 ├── escpos.go            # Motor de codificación: ESC t n, transcodificación y salto de gráficos
 ├── escpos_codepages.go  # Tablas generadas CP850 / CP858 / CP1252 / CP437 + fallback ASCII
-├── escpos_test.go       # Tests del motor de codificación (14 casos)
+├── escpos_test.go       # Tests del motor de codificación (16 casos)
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
 ├── printer_windows.go   # Build tag: windows — spooler, RAW, cola, autostart, killOrphan
 ├── printer_darwin.go    # Build tag: darwin — CUPS, RAW, cola, autostart, killOrphan
+├── assets_windows.go    # Build tag: windows — //go:embed del .ico y de la ilustración
+├── assets_darwin.go     # Build tag: darwin — //go:embed del icono PNG de la barra de menús
+├── firstrun.go          # Marcador de "bienvenida ya mostrada" y orquestación de --first-run
+├── firstrun_windows.go  # Build tag: windows — ventana de bienvenida nativa Win32
+├── firstrun_darwin.go   # Build tag: darwin — diálogo equivalente con osascript
+├── app_icon.ico         # Icono del gato tuxedo, 7 resoluciones (16–256 px) — embebido
+├── app_icon.png         # El mismo icono en PNG 64×64 para la barra de menús de macOS
+├── welcome_cat.png      # Ilustración 880×440: el gato jugando con la ticketera — embebida
+├── app.manifest         # Manifiesto Win32: asInvoker + Common Controls 6.0
+├── rsrc_windows_amd64.syso # Recurso Win32 generado (icono + manifiesto) que enlaza el .exe
+├── tools/
+│   └── genassets/
+│       └── main.go      # Generador de app_icon.ico/.png y welcome_cat.png (dibujo por código)
 ├── installer/
 │   └── setup.iss        # Script Inno Setup para instalador silencioso Windows
 ├── .gitignore
@@ -81,11 +100,13 @@ ejecuta el agente. Ver "Ubicación Permanente del Binario".
 | `cronos-agent.log` (+ `.1`–`.3`) | `%LOCALAPPDATA%\CronosAgent\` | Junto al binario |
 | `private-key.pem` | `%LOCALAPPDATA%\CronosAgent\` | Junto al binario |
 | `digital-certificate.txt` | `%LOCALAPPDATA%\CronosAgent\` | Junto al binario |
+| `welcome-shown` | `%LOCALAPPDATA%\CronosAgent\` | Junto al binario |
 
 ## Archivo `config.json` — Esquema Completo
 
 ```json
 {
+  "config_version": 2,
   "api_token": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
   "allowed_origins": [
     "https://pos-app.tech",
@@ -96,7 +117,7 @@ ejecuta el agente. Ver "Ubicación Permanente del Binario".
   ],
   "update_url": "https://pos-app.tech/agent/version.json",
   "port": 9100,
-  "escpos_code_page": "cp850",
+  "escpos_code_page": "cp1252",
   "escpos_transcode": true,
   "autostart": true
 }
@@ -104,16 +125,31 @@ ejecuta el agente. Ver "Ubicación Permanente del Binario".
 
 | Propiedad | Tipo | Default | Descripción |
 |---|---|---|---|
+| `config_version` | `int` | `2` | Versión del **esquema** del archivo (no la del agente). Dispara las migraciones una sola vez |
 | `api_token` | `string` | UUID v4 auto | Token de autenticación para header `X-Cronos-Agent-Token` |
 | `allowed_origins` | `string[]` | 5 orígenes | Lista de orígenes CORS permitidos |
 | `update_url` | `string` | pos-app.tech | URL del JSON de versión para auto-updates |
 | `port` | `int` | `9100` | Puerto preferido. Si está ocupado, busca el siguiente libre (9101–9110) |
-| `escpos_code_page` | `string` | `"cp850"` | Página de códigos que se activa en la ticketera: `cp850`, `cp858`, `cp1252`, `cp437` o `none` |
+| `escpos_code_page` | `string` | `"cp1252"` | Página de códigos que se activa en la ticketera: `cp1252`, `cp850`, `cp858`, `cp437` o `none` |
 | `escpos_transcode` | `bool` | `true` | Convierte el texto UTF-8 a los bytes de esa página de códigos |
+| `escpos_code_page_id` | `int` | ausente | Sustituye el `n` de `ESC t n` por un valor concreto (0–255) manteniendo la tabla de `escpos_code_page`. Sólo para ticketeras con numeración propia |
 | `autostart` | `bool` | `true` | Preferencia de arranque con el sistema. El agente sólo repara la entrada del registro si es `true` |
 
 Las claves nuevas se añaden automáticamente al `config.json` existente en el
-primer arranque de la v1.4.0, sin perder el `api_token` ya emitido al frontend.
+primer arranque, sin perder el `api_token` ya emitido al frontend.
+
+### Migraciones de esquema (`config_version`)
+
+`LoadConfig()` compara el `config_version` del archivo con el que espera esta
+versión del agente y aplica las migraciones pendientes una sola vez, dejando
+intacto el `api_token`.
+
+| Migración | Qué hace | Por qué |
+|---|---|---|
+| v1 → v2 | `escpos_code_page: "cp850"` → `"cp1252"` | Ese `cp850` no lo eligió ningún operador: lo escribió el propio agente como valor por defecto en su primer arranque. Sin la migración, las cajas ya instaladas seguirían imprimiendo los acentos mal tras actualizar |
+
+Una página **distinta** de `cp850` (por ejemplo `cp858`, `cp437` o `none`) sí es
+una decisión deliberada del integrador y se respeta.
 
 ## Conmutación Dinámica de Puertos
 
@@ -245,6 +281,7 @@ ruta distinta de la del binario en ejecución (por ejemplo tras mover la app a
 | `--disable-autostart` | Elimina el auto-arranque y guarda la preferencia. Lo usa el desinstalador |
 | `--no-install` | No reubica el binario a la ruta permanente (uso en desarrollo) |
 | `--relaunched` | Uso interno: marca la instancia ya relanzada desde la ruta permanente |
+| `--first-run` | Arranca con normalidad y además abre la ventana de bienvenida. Lo usa el instalador al terminar la barra de progreso |
 | (sin flags) | Modo normal: self-healing, reubicación, reparación de autostart, systray + servidor HTTP |
 
 ### Generación de Certificados SSL
@@ -290,7 +327,11 @@ ISCC.exe installer/setup.iss
 | 2 | Copia binario a la ruta permanente | `C:\Program Files\CronosAgent\` con admin, `C:\ProgramData\CronosAgent\` sin elevación (`PermanentInstallDir`) |
 | 3 | Genera certificados SSL | `--generate-certs` en modo oculto y con `runasoriginaluser` |
 | 4 | Registra el autostart | `HKCU\...\Run` → `CronosPOSAgent` con la ruta **entre comillas dobles** |
-| 5 | Lanza el agente | En segundo plano, sin ventana y con `runasoriginaluser` |
+| 5 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--first-run` y **sin** `runhidden`, para que se vea la ventana de bienvenida; en `/VERYSILENT`, sin el flag y con `runhidden` |
+
+El instalador usa el mismo gato tuxedo como icono (`SetupIconFile=..\app_icon.ico`),
+y "Aplicaciones instaladas" lo muestra a través del recurso Win32 del propio
+ejecutable (`UninstallDisplayIcon={app}\cronos-pos-agent.exe`).
 
 **`PrivilegesRequired=admin` + `PrivilegesRequiredOverridesAllowed=dialog commandline`:**
 se pide elevación para instalar en Program Files; si no hay credenciales de
@@ -310,7 +351,7 @@ quien registra el auto-arranque en la rama correcta durante su primer arranque
 ### Instalación silenciosa por línea de comandos
 
 ```bash
-CronosAgentSetup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+CronosAgentSetup-1.5.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 - `/VERYSILENT`: Sin interfaz gráfica
@@ -353,11 +394,19 @@ soporte completo de español:
 
 | Página | Comando | Bytes | Cobertura |
 |---|---|---|---|
-| **CP850** (por defecto) | `ESC t 2` | `1B 74 02` | Multilingual Latin-1: Á É Í Ó Ú Ñ ñ Ü ü ¿ ¡ |
+| **CP1252** (por defecto desde la v1.5.0) | `ESC t 16` | `1B 74 10` | Windows Latin-1: Á É Í Ó Ú Ñ ñ Ü ü ¿ ¡ € |
+| CP850 | `ESC t 2` | `1B 74 02` | Multilingual Latin-1 (por defecto hasta la v1.4.0) |
 | CP858 | `ESC t 19` | `1B 74 13` | CP850 + símbolo € |
-| CP1252 | `ESC t 16` | `1B 74 10` | Windows Latin-1 |
 | CP437 | `ESC t 0` | `1B 74 00` | USA/Standard Europe (página de fábrica) |
 | `none` | — | — | Desactiva todo el tratamiento: los bytes viajan tal cual |
+
+> **Ojo con `1B 74 13`.** En la tabla estándar de Epson —la que respetan
+> prácticamente todos los clones— `n = 19` (`0x13`) es **PC858**, no CP1252.
+> CP1252 es `n = 16` (`0x10`), que es lo que envía el agente. Ambas páginas
+> imprimen bien los acentos del español, pero colocan los caracteres en bytes
+> distintos, así que enviar `0x13` mientras se transcodifica a CP1252 imprimiría
+> basura. Si un modelo concreto numera sus tablas de otra forma, se corrige con
+> `escpos_code_page_id` (ver más abajo) sin recompilar.
 
 El comando **no** se antepone ciegamente: si el payload empieza por `ESC @`
 (`1B 40`, inicializar impresora), la selección se inyecta **después**. `ESC @`
@@ -408,22 +457,251 @@ comandos. Por eso el recorrido:
 - Copia sin tocar todo byte ASCII (`< 0x80`), que cubre el resto de comandos.
 - Copia tal cual los bytes sueltos que no forman UTF-8 válido.
 
+### Por qué CP1252 es ahora la página por defecto — el caso «†nimo»
+
+Síntoma en producción: el ticket imprimía **`†nimo`** donde debía decir
+**`Ánimo`**. Un único carácter fuera de sitio, siempre en las mayúsculas
+acentuadas, y sólo en algunas cajas.
+
+La causa es que **la `Á` no tiene un byte universal**: cada página de códigos la
+coloca en una posición distinta.
+
+| Página activa en el hardware | Byte `0xB5` (la `Á` de CP850) se imprime como |
+|---|---|
+| CP850 | `Á` ✔ |
+| CP1252 | `µ` |
+| CP437 | `╡` |
+| Otras tablas del firmware | cualquier otro símbolo — de ahí la `†` |
+
+Con CP850 el agente enviaba `0xB5`, un byte que **sólo** significa `Á` en esa
+página concreta. Basta con que la ticketera pierda la selección —un `ESC @` que
+manda el frontend a mitad del ticket, un corte de corriente, un reinicio del
+spooler, un modelo que arranca en su tabla de fábrica— para que ese mismo byte
+se dibuje como el símbolo que ocupe esa posición en la tabla que quedó activa.
+
+CP1252 elimina esa fragilidad en una caja de cobro Windows: sus bytes son los de
+Latin-1 (`Á` = `0xC1`), que es lo que la ticketera y el propio sistema esperan
+por defecto. Si la selección de página se pierde, el texto sigue saliendo bien.
+
+Qué cambia exactamente:
+
+1. `defaultCodePage` pasa de `cp850` a `cp1252` (`escpos.go`).
+2. Todo flujo de impresión RAW abre con `1B 74 10` (`ESC t 16` → CP1252),
+   inyectado detrás del `ESC @` inicial si el payload lo trae.
+3. El texto se transcodifica a los bytes de CP1252 (`Á` → `0xC1`).
+4. Los `config.json` ya existentes se migran de `cp850` a `cp1252` mediante
+   `config_version` (ver "Migraciones de esquema"): sin esa migración las cajas
+   ya instaladas habrían seguido imprimiendo mal después de actualizar.
+
+### Ticketeras con numeración propia — `escpos_code_page_id`
+
+El `n` de `ESC t n` sigue la tabla de Epson, pero algún clon numera sus páginas
+de otra forma. En vez de recompilar, se fuerza el byte exacto:
+
+```json
+{ "escpos_code_page": "cp1252", "escpos_code_page_id": 19 }
+```
+
+El agente enviará `1B 74 13` pero seguirá transcodificando con la tabla de
+CP1252. Es decir: **el comando y la tabla se configuran por separado**, porque
+lo que hay que hacer coincidir es lo que la impresora entiende con lo que el
+agente escribe. Fuera del rango 0–255 el valor se ignora con un aviso en el log.
+
+El número describe cómo numera esa ticketera **una página concreta**, la
+configurada. Si un ticket pide otra con `code_page`, el override se descarta y
+se vuelve a la numeración estándar de Epson.
+
 ### Configuración
 
-Global en `config.json` (`escpos_code_page`, `escpos_transcode`) y anulable por
-ticket con los campos opcionales `code_page` y `transcode` de `POST /api/print`.
-Se aceptan alias: `850`, `pc850`, `latin1`, `windows-1252`, `off`…
+Global en `config.json` (`escpos_code_page`, `escpos_transcode`,
+`escpos_code_page_id`) y anulable por ticket con los campos opcionales
+`code_page` y `transcode` de `POST /api/print`. Se aceptan alias: `1252`,
+`windows-1252`, `850`, `pc850`, `latin1`, `off`…
 
 ### Cobertura de tests
 
-`escpos_test.go` — 14 casos: bytes exactos de las mayúsculas acentuadas en CP850
-y CP1252, degradación a ASCII en CP437, integridad de los comandos ESC/POS, logo
-raster con UTF-8 incrustado que debe salir intacto, inserción después de `ESC @`,
-respeto a un `ESC t` propio del frontend y resolución de alias.
+`escpos_test.go` — 16 casos: bytes exactos de las mayúsculas acentuadas en CP850
+y CP1252, `Ánimo` completo con la configuración por defecto (`1B 74 10` + `C1`),
+override del selector, degradación a ASCII en CP437, integridad de los comandos
+ESC/POS, logo raster con UTF-8 incrustado que debe salir intacto, inserción
+después de `ESC @`, respeto a un `ESC t` propio del frontend y resolución de
+alias.
 
 ```bash
 go test ./...   # ejecutar desde Windows o macOS (el paquete no compila en Linux)
 ```
+
+## Identidad Visual — Icono del Gato Tuxedo
+
+### Qué se embebe y por qué
+
+El agente es un binario `-H=windowsgui`: no abre ventana, no aparece en la barra
+de tareas al arrancar y su única presencia visible es un icono de 16 px en el
+System Tray. Hasta la v1.4.0 ese icono era el genérico de Windows, y el operador
+no sabía distinguirlo del resto de la bandeja.
+
+Los recursos gráficos van **dentro** del ejecutable con `//go:embed`:
+
+```go
+//go:embed app_icon.ico
+var appIconICO []byte
+
+//go:embed welcome_cat.png
+var welcomeCatPNG []byte
+```
+
+No es una preferencia de estilo: el binario **se sobrescribe entero** en cada
+actualización y se copia solo a `C:\Program Files\CronosAgent` desde donde lo
+haya dejado el operador (ver "Ubicación Permanente del Binario"). Un icono que
+viviera como archivo suelto junto al `.exe` se perdería en la primera
+actualización o en la primera reubicación, y el agente volvería al icono
+genérico. Embebido, el ejecutable es autónomo.
+
+`main.go` lo aplica al arrancar la bandeja, antes del tooltip:
+
+```go
+systray.SetIcon(trayIcon())
+```
+
+### Un icono por plataforma
+
+`trayIcon()` está definido dos veces con build tags porque cada System Tray
+exige un formato distinto:
+
+| Plataforma | Archivo | Formato | Motivo |
+|---|---|---|---|
+| Windows | `assets_windows.go` → `app_icon.ico` | `.ico` (16, 24, 32, 48, 64, 128, 256 px) | `Shell_NotifyIcon` carga el icono con `LoadImage`, que sólo lee `.ico` |
+| macOS | `assets_darwin.go` → `app_icon.png` | PNG 64×64 | `NSStatusItem` se dibuja con `NSImage`, que reescala a 16 pt |
+
+Las resoluciones pequeñas del `.ico` se dibujan por separado, no reduciendo la
+grande: a 16×16 cualquier detalle se convierte en ruido, así que el icono es
+deliberadamente plano — silueta negra, mancha blanca del hocico y ojos dorados.
+
+### Icono del ejecutable y manifiesto (`rsrc_windows_amd64.syso`)
+
+`//go:embed` resuelve el icono de la bandeja, pero **no** el que muestran el
+Explorador, Alt+Tab o el panel de aplicaciones instaladas: ése tiene que ser un
+recurso Win32 del PE. Se genera con `rsrc` y el enlazador de Go lo incorpora
+solo por el sufijo `_windows_amd64` del nombre:
+
+```bash
+go run github.com/akavel/rsrc@v0.10.2 \
+  -ico app_icon.ico -manifest app.manifest -arch amd64 -o rsrc_windows_amd64.syso
+```
+
+El mismo `.syso` embebe `app.manifest`, que aporta dos cosas:
+
+- `requestedExecutionLevel asInvoker` — el agente nunca pide elevación: `HKCU` y
+  `%LOCALAPPDATA%` deben ser los del operador de la caja, no los de un
+  administrador.
+- Dependencia de **Common Controls 6.0** — sin ella el botón "Cerrar" de la
+  ventana de bienvenida se dibujaría con el estilo gris de Windows 95.
+
+No se declara compatibilidad con DPI a propósito: la ventana de bienvenida usa
+medidas fijas en píxeles, así que en una pantalla al 150 % es preferible que
+Windows escale la ventana entera a que la dibuje a dos tercios de su tamaño.
+
+### Los recursos se dibujan por código
+
+`tools/genassets` genera los tres archivos dibujando figuras (elipses,
+polígonos, Béziers) sobre un lienzo supermuestreado ×4 que después se reduce
+promediando bloques, que es de donde sale el suavizado de bordes:
+
+```bash
+go run ./tools/genassets     # reescribe app_icon.ico, app_icon.png y welcome_cat.png
+```
+
+Así el repositorio no arrastra binarios opacos de origen desconocido: el gato
+es reproducible, auditable y modificable en un `diff`. El `.ico` se serializa a
+mano (ICONDIR + ICONDIRENTRY + DIB de 32 bits, con las dos resoluciones grandes
+comprimidas en PNG para no engordar el archivo 260 KB).
+
+## Ventana de Bienvenida Post-Instalación (`--first-run`)
+
+### El problema
+
+Una instalación atendida terminaba sin ninguna señal: el instalador cierra su
+barra de progreso, el agente arranca oculto y lo único que cambia en pantalla es
+un icono de 16 px en la bandeja. El operador de la caja no tenía forma de saber
+si había funcionado, y la duda acababa en una llamada a soporte.
+
+### El flujo
+
+1. El instalador lanza el agente con `--first-run` al terminar la barra de
+   progreso (`[Run]` de `setup.iss`).
+2. El agente arranca con normalidad —self-healing, reubicación, auto-arranque,
+   bandeja y servidor HTTP— y **además** abre la ventana de bienvenida.
+3. El operador la cierra con el botón "Cerrar" (o con la X de la barra de
+   título) y el agente sigue funcionando en la bandeja.
+
+### Por qué la ventana la abre el propio agente
+
+Podría lanzarse un segundo proceso sólo para la ventana, pero
+`killOrphanInstances()` mata al arrancar cualquier otra instancia de
+`cronos-pos-agent.exe` que no sea la actual (ver "Self-Healing"). Ese segundo
+proceso moriría en cuanto el agente hiciera su limpieza —o al revés, según quién
+ganara la carrera—. Abriéndola desde el mismo proceso no hay carrera posible.
+
+La ventana corre en su propia goroutine con `runtime.LockOSThread()`, porque el
+bucle de mensajes de Win32 es por hilo y `systray.Run()` se queda con el
+principal hasta que el usuario cierra el agente.
+
+Si el binario tiene que reubicarse a la ruta permanente, el flag viaja con el
+relanzado (`EnsurePermanentLocation("--first-run")`): la ventana debe abrirla la
+instancia definitiva, no la temporal que está a punto de terminar.
+
+### Contenido de la ventana
+
+| Elemento | Detalle |
+|---|---|
+| Ilustración | `welcome_cat.png` (880×440, embebida): el gato tuxedo jugando con la ticketera y su ticket |
+| Mensaje | **"¡Cronos POS se ha instalado correctamente!"** |
+| Texto secundario | Explica que el agente ya está en la bandeja y que arrancará solo con el equipo |
+| Botón | "✕ Cerrar", con el aspa clásica; la ventana conserva además la X de la barra de título |
+| Icono de la ventana | El gato tuxedo (`app_icon.ico`, cargado con `LoadImageW`) |
+| Tamaño | Área cliente de 468×384 px, centrada en la pantalla |
+
+### Por qué Win32 nativo y no una librería
+
+`firstrun_windows.go` habla directamente con `user32.dll` y `gdi32.dll` vía
+`syscall`, igual que ya hacía `printer_windows.go` con `ShellExecuteW`:
+
+| Alternativa | Por qué se descartó |
+|---|---|
+| `github.com/lxn/win` | Sin mantenimiento desde 2021. Obliga a escribir exactamente el mismo código (registrar la clase, bucle de mensajes, pintar el bitmap) con otra fachada |
+| `fyne` | Requiere CGO y OpenGL, y añade decenas de MB al binario para una ventana que se abre una vez en la vida del equipo |
+| `MessageBox` nativa | No admite imagen propia, y el requisito es mostrar la ilustración |
+
+Resultado: **cero dependencias nuevas** en `go.mod` y el ejecutable sigue siendo
+un único archivo autónomo.
+
+Detalle de implementación: `StretchDIBits` ignora el canal alfa de un DIB
+`BI_RGB`, así que la transparencia del PNG se compone contra el blanco de la
+ventana al decodificarlo; de lo contrario los bordes suavizados de la
+ilustración saldrían con un halo gris. La imagen se guarda al doble del tamaño
+con el que se dibuja y se reduce con `HALFTONE`, para que se vea nítida cuando
+Windows escala la ventana en pantallas HiDPI.
+
+### Una sola vez
+
+El agente escribe un marcador `welcome-shown` en su directorio de datos
+(`%LOCALAPPDATA%\CronosAgent\`) con la versión que ya se mostró:
+
+- Relanzar el binario con `--first-run` no repite la ventana.
+- Actualizar a una versión nueva sí vuelve a confirmarle al operador que la
+  actualización ha ido bien.
+- El marcador se escribe **antes** de abrir la ventana: si el subsistema
+  gráfico fallara, el agente no debe quedarse intentándolo en cada arranque.
+- El desinstalador lo borra, para que una reinstalación vuelva a saludar.
+
+En despliegues silenciosos (`/VERYSILENT`) la ventana **no** se abre: el
+instalador usa `Check: not WizardSilent` y lanza el agente sin el flag. No hay
+nadie delante de esas pantallas que la cierre.
+
+En macOS `showWelcomeWindow()` muestra el diálogo equivalente con `osascript`.
+No se replica la ventana con ilustración porque el problema que la motiva es de
+Windows: en macOS la app se instala arrastrándola a `/Applications` y el propio
+Finder da esa confirmación.
 
 ## Seguridad — Token Local
 
@@ -452,7 +730,7 @@ Base: `http://127.0.0.1:{port}` (puerto dinámico, default 9100)
 {
   "printer_name": "POS-80",
   "printer_data": "G0BBUlTDjUNVTE8gw5FPw5FPCh1WAA==",
-  "code_page": "cp850",
+  "code_page": "cp1252",
   "transcode": true
 }
 ```
@@ -462,9 +740,9 @@ El `printer_data` del ejemplo es `ESC @` + `"ARTÍCULO ÑOÑO\n"` en UTF-8 + cor
 
 ```
 Recibido:  1B 40             41 52 54 C3 8D 43 55 4C 4F 20 C3 91 4F C3 91 4F 0A  1D 56 00
-Enviado:   1B 40  1B 74 02   41 52 54 D6    43 55 4C 4F 20 A5    4F A5    4F 0A  1D 56 00
+Enviado:   1B 40  1B 74 10   41 52 54 CD    43 55 4C 4F 20 D1    4F D1    4F 0A  1D 56 00
                   ^^^^^^^^            ^^                ^^       ^^
-                  ESC t 2 tras ESC @  Í en CP850        Ñ en CP850
+                  ESC t 16 tras ESC @ Í en CP1252       Ñ en CP1252
 ```
 
 | Campo | Tipo | Obligatorio | Descripción |
@@ -483,6 +761,13 @@ Enviado:   1B 40  1B 74 02   41 52 54 D6    43 55 4C 4F 20 A5    4F A5    4F 0A 
 | `github.com/atotto/clipboard` | v0.1.4 | Copiar el token de seguridad al portapapeles del SO (multiplataforma) |
 | `golang.org/x/sys` | v0.1.0+ | Registro de Windows |
 
+La Fase 10 **no añadió ninguna dependencia**: el icono se embebe con `//go:embed`
+(stdlib), las ilustraciones se generan con `image`/`image/png` (stdlib) y la
+ventana de bienvenida habla directamente con `user32`/`gdi32` vía `syscall`.
+
+`github.com/akavel/rsrc` se usa como herramienta puntual (`go run …@v0.10.2`)
+para regenerar `rsrc_windows_amd64.syso`; no aparece en `go.mod` ni se enlaza.
+
 ## Compilación para Producción
 
 ### Windows x64 (desde macOS M4 Pro):
@@ -499,19 +784,29 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 \
   go build -ldflags="-w -s" -o cronos-pos-agent .
 ```
 
+Los recursos gráficos ya están versionados en el repositorio, así que compilar
+**no** requiere regenerarlos. Sólo hace falta si se cambia el dibujo del gato:
+
+```bash
+go run ./tools/genassets                       # app_icon.ico, app_icon.png, welcome_cat.png
+go run github.com/akavel/rsrc@v0.10.2 \        # rsrc_windows_amd64.syso (icono + manifiesto)
+  -ico app_icon.ico -manifest app.manifest -arch amd64 -o rsrc_windows_amd64.syso
+```
+
 ### Pipeline completo de distribución Windows:
 
 ```bash
-# 1. Compilar binario optimizado
+# 1. Compilar binario optimizado (enlaza rsrc_windows_amd64.syso automáticamente
+#    por el sufijo del nombre, y embebe el icono y la ilustración con go:embed)
 GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc \
   go build -ldflags="-H=windowsgui -w -s" -o build/cronos-pos-agent.exe .
 
 # 2. Generar instalador (ejecutar en Windows)
 ISCC.exe installer/setup.iss
 
-# 3. Resultado: installer/Output/CronosAgentSetup-1.4.0.exe
+# 3. Resultado: installer/Output/CronosAgentSetup-1.5.0.exe
 # 4. Despliegue silencioso en cajas de cobro:
-#    CronosAgentSetup-1.4.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+#    CronosAgentSetup-1.5.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 ## Fases — Historial Completo
@@ -551,6 +846,19 @@ ISCC.exe installer/setup.iss
 - ~~Overrides `code_page` / `transcode` en `POST /api/print` y en `config.json`~~ ✓
 - ~~Instalador con `PrivilegesRequired=admin` + `runasoriginaluser` y desinstalación de la clave HKCU correcta~~ ✓
 - ~~Suite de tests `escpos_test.go` y versión del agente actualizada a 1.4.0~~ ✓
+
+### Fase 10: Pulido Final — Encoding, Icono y Bienvenida ✓
+- ~~Página de códigos por defecto CP1252 (`ESC t 16` = `1B 74 10`) en todo flujo de impresión RAW~~ ✓
+- ~~Migración automática del `config.json` existente de `cp850` a `cp1252` vía `config_version`~~ ✓
+- ~~Override `escpos_code_page_id` para ticketeras con numeración de tablas propia~~ ✓
+- ~~Icono del gato tuxedo embebido con `//go:embed app_icon.ico` y aplicado con `systray.SetIcon`~~ ✓
+- ~~Icono PNG equivalente para la barra de menús de macOS~~ ✓
+- ~~Recurso Win32 (`rsrc_windows_amd64.syso`): icono del ejecutable + manifiesto con Common Controls 6~~ ✓
+- ~~Generador reproducible de los recursos gráficos (`tools/genassets`)~~ ✓
+- ~~Ventana de bienvenida post-instalación nativa Win32 con ilustración, mensaje y botón "Cerrar"~~ ✓
+- ~~Flag `--first-run`, marcador `welcome-shown` por versión y propagación al relanzado~~ ✓
+- ~~Instalador: icono propio, lanzamiento con `--first-run` y omisión de la ventana en `/VERYSILENT`~~ ✓
+- ~~Dos tests nuevos (`Ánimo` con la configuración por defecto y override del selector) y versión 1.5.0~~ ✓
 
 ## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
 
