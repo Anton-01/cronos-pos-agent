@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 11: Estabilización de Iconos Dinámicos y Transcodificación de Acentos** — Finalizado
+**Fase 12: Instalador con Manejo Inteligente de Actualizaciones** — Finalizado
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Detección de instalación previa en `InitializeSetup`, pantalla de reinstalación, cierre preventivo del proceso activo y log de instalación para soporte).
 
 ## Arquitectura
 
@@ -49,6 +49,10 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Logs | Rotación nativa con `RotatingLogger` | Sin dependencias externas, 10MB max, 3 backups |
 | Updates | Goroutine con polling cada 6h | Consulta JSON remoto |
 | Instalador | Inno Setup 6.3+ | Instalador silencioso estándar de Windows; pide admin para Program Files y cae a ProgramData si no lo hay |
+| Detección de reinstalación | Clave `Uninstall\{AppId}_is1` leída en `InitializeSetup()` | Es la clave que el propio Inno escribe al instalar: no hay que inventar un marcador propio que se pueda desincronizar |
+| Pantalla de reinstalación | `CreateCustomForm` (Pascal Scripting) | Un `MsgBox` no permite fijar el título de la ventana ni maquetar la lista de lo que se conserva |
+| Cierre del proceso activo | `taskkill /T` y, si sobrevive, `/F /T` desde `PrepareToInstall()` | Windows bloquea la sobrescritura de un `.exe` en uso; el primer intento deja que el agente ejecute su `onExit()` |
+| Log del instalador | `SetupLogging=yes` + copia en `{app}\install-log.txt` | Soporte pide siempre la misma ruta en vez de buscar un archivo con la fecha en el `%TEMP%` del operador |
 
 ### Estructura de Archivos
 
@@ -87,7 +91,7 @@ cronos-pos-agent/
 │   └── genassets/
 │       └── main.go      # Generador de los 3 iconos y de welcome_cat.png (dibujo por código)
 ├── installer/
-│   └── setup.iss        # Script Inno Setup para instalador silencioso Windows
+│   └── setup.iss        # Script Inno Setup: instalador silencioso + lógica de actualización/reinstalación
 ├── .gitignore
 ├── go.mod
 ├── go.sum
@@ -330,11 +334,14 @@ ISCC.exe installer/setup.iss
 
 | Paso | Acción | Detalle |
 |---|---|---|
-| 1 | Cierra instancias previas | `taskkill /F /IM cronos-pos-agent.exe` via `PrepareToInstall()` |
-| 2 | Copia binario a la ruta permanente | `C:\Program Files\CronosAgent\` con admin, `C:\ProgramData\CronosAgent\` sin elevación (`PermanentInstallDir`) |
-| 3 | Genera certificados SSL | `--generate-certs` en modo oculto y con `runasoriginaluser` |
-| 4 | Registra el autostart | `HKCU\...\Run` → `CronosPOSAgent` con la ruta **entre comillas dobles** |
-| 5 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--first-run` y **sin** `runhidden`, para que se vea la ventana de bienvenida; en `/VERYSILENT`, sin el flag y con `runhidden` |
+| 1 | Detecta la instalación previa | `InitializeSetup()` lee `Uninstall\{AppId}_is1` y, si existe, muestra la pantalla de actualización (ver "Actualización y Reinstalación") |
+| 2 | Elige el destino | La ruta de la instalación anterior si la hay; si no, `C:\Program Files\CronosAgent\` con admin y `C:\ProgramData\CronosAgent\` sin elevación (`PermanentInstallDir`) |
+| 3 | Cierra el agente en memoria | `taskkill /T` y, si sobrevive, `/F /T` desde `PrepareToInstall()`, justo antes de la copia de archivos |
+| 4 | Copia el binario a la ruta permanente | Sobrescritura garantizada: en el paso anterior se ha comprobado que ya no hay ningún proceso reteniendo el `.exe` |
+| 5 | Genera certificados SSL | `--generate-certs` en modo oculto y con `runasoriginaluser`. **Sólo en instalación nueva** (`Check: not IsUpgradeInstall`) |
+| 6 | Registra el autostart | `HKCU\...\Run` → `CronosPOSAgent` con la ruta **entre comillas dobles** |
+| 7 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--first-run` y **sin** `runhidden`, para que se vea la ventana de bienvenida; en `/VERYSILENT`, sin el flag y con `runhidden` |
+| 8 | Deja el log para soporte | Copia el registro de `SetupLogging=yes` a `{app}\install-log.txt` en `CurStepChanged(ssDone)` |
 
 El instalador usa el mismo gato tuxedo como icono (`SetupIconFile=..\app_icon.ico`),
 y "Aplicaciones instaladas" lo muestra a través del recurso Win32 del propio
@@ -346,7 +353,7 @@ administrador, Inno reintenta sin elevar y el destino cae a `C:\ProgramData\Cron
 que también es permanente y escribible sin admin. El despliegue silencioso sigue
 funcionando en ambos casos.
 
-**`runasoriginaluser` es imprescindible** en los pasos 3 y 5: cuando el
+**`runasoriginaluser` es imprescindible** en los pasos 5 y 7: cuando el
 instalador corre elevado, `HKCU` y `%LOCALAPPDATA%` son los del administrador y
 no los del operador de la caja. Ejecutando el agente como el usuario original,
 el token, los certificados y la clave de auto-arranque acaban en el perfil
@@ -365,10 +372,177 @@ CronosAgentSetup-1.6.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 - `/SUPPRESSMSGBOXES`: Sin diálogos de confirmación
 - `/NORESTART`: No reiniciar Windows
 
+En modo silencioso la pantalla de reinstalación **no** se muestra (`WizardSilent`):
+un despliegue masivo se quedaría colgado esperando un clic que nadie va a dar.
+La detección, el cierre del proceso y el log sí se ejecutan igual.
+
+## Actualización y Reinstalación del Instalador
+
+Hasta la v1.6.0 el instalador trataba una actualización exactamente igual que una
+instalación limpia: no avisaba de nada, podía elegir un destino distinto al de la
+instalación previa y sobrescribía los certificados. Y si el operador tenía el
+agente abierto —que es lo normal, arranca con Windows—, la copia del `.exe`
+fallaba con el clásico "el archivo está en uso".
+
+### 1. Detección de la instalación previa (`InitializeSetup`)
+
+La fuente de verdad es la clave que **el propio Inno Setup** escribe al instalar,
+compuesta con el `AppId` y el sufijo `_is1`:
+
+```
+Software\Microsoft\Windows\CurrentVersion\Uninstall\{B7E3F4A2-9C1D-4E5F-A8B6-7D2C3E4F5A6B}_is1
+```
+
+De ahí se leen `DisplayVersion` (la versión instalada) e `Inno Setup: App Path`
+(la carpeta real del binario, con `InstallLocation` como reserva).
+
+**Se consultan cuatro ramas, no una.** El agente se instala con elevación o sin
+ella, y cada modalidad deja la clave en un sitio distinto:
+
+| Orden | Rama | Cuándo la escribió |
+|---|---|---|
+| 1 | `HKLM` | Instalación elevada (destino `Program Files`) |
+| 2 | `HKCU` | Instalación sin elevación (destino `ProgramData`) |
+| 3 | `HKLM32` | Instalador de 32 bits anterior a `ArchitecturesInstallIn64BitMode` (vista `WOW6432Node`) |
+| 4 | `HKCU32` | Ídem sin elevación |
+
+Buscar sólo en la rama que usaría *esta* ejecución haría que un instalador
+elevado no viera la instalación que el operador hizo sin permisos de
+administrador, y acabaría con dos copias del agente en el equipo.
+
+El GUID se declara una sola vez (`#define AppGuid`) y se reutiliza tanto en
+`AppId` como en la ruta de la clave, para que no puedan divergir.
+
+### 2. Pantalla de reinstalación
+
+Si la detección acierta y la instalación es atendida, antes de tocar un solo
+archivo se abre una ventana propia (`CreateCustomForm`) con:
+
+| Elemento | Contenido |
+|---|---|
+| Título de la ventana | **"Actualización / Reinstalación detectada de Cronos POS Agent"** |
+| Encabezado | El mismo texto, en negrita y tres puntos más grande |
+| Mensaje | "Hemos detectado que Cronos POS Agent ya se encuentra instalado en este equipo. El proceso actualizará el motor del agente y los recursos visuales, manteniendo intactas tus configuraciones y tokens de seguridad actuales para que no tengas que reconfigurar nada." |
+| Lista de lo que se conserva | `api_token`, `config.json` (puerto, CORS, página de códigos), certificados SSL y la preferencia de "Iniciar con el Sistema" |
+| Datos detectados | Versión previa y ruta encontradas en el registro, en gris, más la versión que se va a instalar |
+| Botones | **"Actualizar ahora"** (por defecto) y **"Cancelar"** |
+
+Se usa un formulario y no un `MsgBox` porque el requisito incluye el **título de
+la ventana**, y `MsgBox` hereda siempre el del instalador. La ventana se centra
+en pantalla y todas las medidas pasan por `ScaleX`/`ScaleY`, así que se ve igual
+en una caja de cobro al 100 % que en un portátil al 150 %.
+
+Cancelar devuelve `False` desde `InitializeSetup()` y el instalador termina sin
+haber modificado nada.
+
+### 3. Qué se conserva de verdad en una actualización
+
+La pantalla promete que no hay que reconfigurar nada. Eso obliga a tres cosas
+concretas en el script:
+
+| Recurso | Por qué sobrevive |
+|---|---|
+| `config.json` (con el `api_token`) | Vive en `%LOCALAPPDATA%\CronosAgent\`, que el instalador sólo toca al desinstalar. `LoadConfig()` añade las claves nuevas sin tocar el token |
+| Certificados SSL | El paso `--generate-certs` lleva `Check: not IsUpgradeInstall`. `GenerateCerts()` abre los archivos con `O_TRUNC`: ejecutarlo en cada actualización emitiría un par RSA nuevo y tumbaría el certificado que el frontend pudiera tener ya aceptado |
+| Ruta de instalación | `PermanentInstallDir` devuelve la carpeta de la instalación anterior si existe, y `UsePreviousAppDir=yes` lo refuerza. Mover el binario de `ProgramData` a `Program Files` en una actualización dejaría dos copias y una entrada de auto-arranque apuntando a la que ya no se actualiza |
+| Preferencia de auto-arranque | La escribe el agente en `config.json`; el instalador no la fuerza (`Check: not IsAdminInstallMode` en `[Registry]`) |
+
+La ventana de bienvenida **sí** vuelve a aparecer al actualizar: el marcador
+`welcome-shown` guarda la versión que ya se mostró (ver "Ventana de Bienvenida
+Post-Instalación"), y confirmarle al operador que la actualización ha ido bien es
+justamente lo que se quiere.
+
+### 4. Cierre preventivo del proceso activo
+
+`PrepareToInstall()` se ejecuta **inmediatamente antes** de la copia de archivos,
+que es el único punto donde la comprobación sirve de algo.
+
+```
+AgentIsRunning?  ──no──>  seguir
+      │ sí
+      ▼
+taskkill /T /IM cronos-pos-agent.exe        (cierre ordenado, sin /F)
+      │  espera hasta 4 s, sondeando cada 250 ms
+      ▼
+¿sigue vivo? ──sí──>  taskkill /F /T /IM …  (forzado, espera hasta 6 s)
+      │ no
+      ▼
+binario libre: Inno puede sobrescribirlo
+```
+
+**Por qué dos pasos y no un `/F` directo.** Un `taskkill` sin `/F` manda
+`WM_CLOSE`, lo que deja al agente ejecutar su `onExit()`: cierra el servidor con
+`srv.Shutdown(ctx)` —sin cortar un ticket a medio camino del spooler— y libera el
+puerto 9100. `/F` termina el proceso en seco. Se intenta lo limpio primero y sólo
+se fuerza a quien no responde.
+
+**Por qué `/T`.** Arrastra a los procesos hijos: el `powershell` de `Get-PrintJob`
+puede seguir vivo con un handle abierto sobre el directorio del agente.
+
+**Cómo se sabe si sigue corriendo.** `taskkill` es asíncrono, así que no basta
+con lanzarlo: se sondea la lista de procesos hasta que desaparece.
+
+```
+cmd /C tasklist /FI "IMAGENAME eq cronos-pos-agent.exe" /NH | find /I "cronos-pos-agent.exe" > nul
+```
+
+`tasklist` devuelve `0` aunque no encuentre nada, así que la respuesta la da
+`find`, que devuelve `1` si la línea no aparece. Todo con `SW_HIDE`: ninguna
+ventana de consola parpadea en la caja de cobro.
+
+**Si aun así sobrevive**, `PrepareToInstall()` devuelve un mensaje y la
+instalación se aborta antes de empezar. Es preferible a fallar a mitad de la
+copia y dejar un `.exe` a medio escribir:
+
+> No se ha podido cerrar Cronos POS Agent, que sigue en ejecución. Ciérralo desde
+> el icono del gato en la bandeja del sistema (menú "Salir") y vuelve a ejecutar
+> el instalador.
+
+Si el `Exec` de `tasklist` fallara por lo que sea, la función responde "no está
+corriendo" y la instalación continúa: debajo sigue estando `CloseApplications=force`,
+que usa el Restart Manager de Windows. Se falla hacia el lado que no bloquea al
+operador.
+
+### 5. Registro de instalación para soporte técnico
+
+`SetupLogging=yes` deja **siempre** —también en `/VERYSILENT`— un log detallado
+en `%TEMP%\Setup Log AAAA-MM-DD #NNN.txt` con cada archivo copiado, cada clave de
+registro tocada y el motivo exacto de cualquier fallo.
+
+Además, `CurStepChanged(ssDone)` copia ese log a una ruta fija y predecible:
+
+```
+C:\Program Files\CronosAgent\install-log.txt
+```
+
+Soporte pide siempre el mismo archivo en vez de hacer que el operador busque uno
+con la fecha en el nombre dentro de su carpeta temporal. Un administrador puede
+además fijar la ruta desde la línea de comandos:
+
+```bash
+CronosAgentSetup-1.6.0.exe /VERYSILENT /LOG="C:\soporte\cronos-install.log"
+```
+
+El script escribe sus propias trazas en ese mismo log con el prefijo `[Cronos]`
+(versión previa detectada, ruta reutilizada, cierre ordenado o forzado del
+proceso, cancelación desde la pantalla). Si la instalación se aborta antes del
+final, `ssDone` no llega a ejecutarse y la copia en `{app}` no existe: en ese caso
+el log válido es el de `%TEMP%`, cuya ruta muestra el propio Inno en el error.
+
+El desinstalador borra `install-log.txt` junto con el resto de archivos.
+
+### `setup.iss` se guarda en UTF-8 **con BOM**
+
+Inno Setup 6 lee un `.iss` sin BOM usando la página ANSI del sistema donde se
+compila. Mientras los acentos vivían sólo en los comentarios daba igual; desde
+que la pantalla de reinstalación lleva texto visible en español, un archivo sin
+BOM imprimiría "ActualizaciÃ³n" en la ventana que ve el operador. El archivo
+empieza por `EF BB BF` y cualquier editor que lo toque debe conservarlo.
+
 ### Desinstalación
 
 El desinstalador (generado automáticamente por Inno Setup):
-1. Mata el proceso del agente (`taskkill`)
+1. Mata el proceso del agente y sus hijos (`taskkill /F /T`)
 2. Ejecuta `cronos-pos-agent.exe --disable-autostart` con `runasoriginaluser`, que
    elimina la clave del registro de la rama `HKCU` del operador real
 3. Limpia `config.json`, logs y certificados de `%LOCALAPPDATA%\CronosAgent`, más
@@ -1008,6 +1182,16 @@ ISCC.exe installer/setup.iss
 - ~~Cierre limpio en `onExit()`: `srv.Shutdown(ctx)` con 5 s de gracia, puerto liberado y goroutines detenidas~~ ✓
 - ~~Canal `agentDone` + `sync.Once` para que "Salir", SIGINT y SIGTERM converjan en una salida idempotente~~ ✓
 - ~~Test nuevo de degradación dentro de un tramo de texto (17 casos) y versión 1.6.0~~ ✓
+
+### Fase 12: Instalador con Manejo Inteligente de Actualizaciones ✓
+- ~~Detección de instalación previa en `InitializeSetup()` leyendo `Uninstall\{AppId}_is1` en HKLM, HKCU y sus vistas de 32 bits~~ ✓
+- ~~Pantalla propia de "Actualización / Reinstalación detectada" con `CreateCustomForm`, lista de lo que se conserva y datos de la versión encontrada~~ ✓
+- ~~La pantalla se omite en `/SILENT` y `/VERYSILENT` (`WizardSilent`), donde no hay nadie que pueda cerrarla~~ ✓
+- ~~Reutilización de la ruta de la instalación anterior como destino (`PermanentInstallDir` + `UsePreviousAppDir`), para no dejar dos copias del agente~~ ✓
+- ~~`--generate-certs` sólo en instalación nueva (`Check: not IsUpgradeInstall`): una actualización ya no reemite el par RSA~~ ✓
+- ~~Cierre preventivo del proceso en `PrepareToInstall()`: `taskkill /T` ordenado y `/F /T` como último recurso, con sondeo de `tasklist` hasta confirmar que el binario está libre~~ ✓
+- ~~Aborto con mensaje accionable si el agente sobrevive, en vez de fallar a mitad de la copia con "archivo en uso"~~ ✓
+- ~~`SetupLogging=yes` y copia del registro a `{app}\install-log.txt` en `ssDone`, con trazas propias del script marcadas `[Cronos]`~~ ✓
 
 ## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
 
