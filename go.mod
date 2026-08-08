@@ -7,6 +7,7 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/getlantern/systray v1.2.2
 	golang.org/x/sys v0.1.0
+	golang.org/x/text v0.23.0
 )
 
 require (

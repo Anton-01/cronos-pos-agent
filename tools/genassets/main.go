@@ -300,13 +300,63 @@ var (
 // El gato tuxedo
 // -----------------------------------------------------------------------------
 
+// catPalette son los colores con los que se dibuja el gato. Cambiarlos es lo
+// que convierte el mismo dibujo en los tres iconos de estado del System Tray.
+type catPalette struct {
+	fur   rgba
+	white rgba
+	inner rgba // interior de las orejas
+	eye   rgba
+	nose  rgba
+	// badge es el punto de estado de la esquina inferior derecha. Es lo que de
+	// verdad se distingue a 16 px: el color del pelaje se pierde, un punto de
+	// color saturado no. nil = sin punto.
+	badge *rgba
+}
+
+// basePalette es el gato "de marca": el del ejecutable, el instalador y la
+// ventana de bienvenida.
+var basePalette = catPalette{
+	fur:   furBlack,
+	white: furWhite,
+	inner: nosePink,
+	eye:   eyeGold,
+	nose:  nosePink,
+}
+
+// grayPalette es el estado neutro: el agente ha arrancado pero todavía no
+// escucha. Todo desaturado, incluidos los ojos, para que se lea "apagado".
+var grayPalette = catPalette{
+	fur:   rgb(0x8B919B),
+	white: rgb(0xE7EAEE),
+	inner: rgb(0xB6AEB2),
+	eye:   rgb(0xCBD0D7),
+	nose:  rgb(0xB6AEB2),
+}
+
+// greenPalette es el estado operativo: el gato de marca con un punto verde.
+var greenPalette = catPalette{
+	fur:   furBlack,
+	white: furWhite,
+	inner: nosePink,
+	eye:   eyeGold,
+	nose:  nosePink,
+	badge: &statusGreen,
+}
+
+var statusGreen = rgb(0x22C55E)
+
 // drawCatFace dibuja la cara del gato tuxedo centrada en (cx, cy) con un radio
 // de cabeza r. La usan tanto el icono como la ilustración de bienvenida, de modo
 // que el gato de la bandeja y el de la ventana son el mismo personaje.
 //
 // El patrón "tuxedo" (esmoquin) se consigue con tres manchas blancas sobre el
 // negro: la lista de la frente, el hocico y la pechera.
-func drawCatFace(c *canvas, cx, cy, r float64) {
+func drawCatFace(c *canvas, cx, cy, r float64, p catPalette) {
+	// Nombres locales para no repetir "p." en cada figura del dibujo.
+	furBlack, furWhite, eyeGold := p.fur, p.white, p.eye
+	earInner, nosePink := p.inner, p.nose
+
 	// Orejas: se dibujan antes que la cabeza para que ésta tape su base.
 	leftEar := []point{
 		{cx - 0.95*r, cy - 0.28*r},
@@ -316,8 +366,8 @@ func drawCatFace(c *canvas, cx, cy, r float64) {
 	rightEar := mirrorX(leftEar, cx)
 	c.polygon(leftEar, furBlack)
 	c.polygon(rightEar, furBlack)
-	c.polygon(shrink(leftEar, 0.42), nosePink)
-	c.polygon(shrink(rightEar, 0.42), nosePink)
+	c.polygon(shrink(leftEar, 0.42), earInner)
+	c.polygon(shrink(rightEar, 0.42), earInner)
 
 	// Cabeza.
 	c.ellipse(cx, cy, r, 0.94*r, furBlack)
@@ -395,16 +445,26 @@ func shrink(pts []point, factor float64) []point {
 // renderIcon dibuja el icono a la resolución pedida. El lienzo de diseño es de
 // 100×100 unidades y sólo contiene la cara: a 16×16 píxeles (el tamaño real en
 // la bandeja de Windows) cualquier detalle adicional se convierte en ruido.
-func renderIcon(size int) *image.NRGBA {
+func renderIcon(size int, p catPalette) *image.NRGBA {
 	const supersample = 4
 	c := newCanvas(100, 100, float64(size)*supersample/100)
 
 	// Pechera blanca asomando por debajo de la cabeza: completa el esmoquin.
-	c.polygon([]point{{38, 84}, {62, 84}, {70, 100}, {30, 100}}, furWhite)
-	c.ellipse(50, 96, 26, 14, furBlack)
-	c.ellipse(50, 100, 15, 11, furWhite)
+	c.polygon([]point{{38, 84}, {62, 84}, {70, 100}, {30, 100}}, p.white)
+	c.ellipse(50, 96, 26, 14, p.fur)
+	c.ellipse(50, 100, 15, 11, p.white)
 
-	drawCatFace(c, 50, 52, 36)
+	drawCatFace(c, 50, 52, 36, p)
+
+	// Punto de estado. Va con un halo del color del fondo para que se despegue
+	// del pelaje incluso cuando el icono se dibuja sobre una barra de tareas
+	// oscura, y se recorta contra el borde del lienzo para ganar tamaño: a
+	// 16 px son 4 píxeles de color, que es justo lo que se ve de un vistazo.
+	if p.badge != nil {
+		c.circle(80, 82, 21, furWhite)
+		c.circle(80, 82, 16, *p.badge)
+	}
+
 	return c.downsample(supersample)
 }
 
@@ -545,7 +605,7 @@ func drawCat(c *canvas) {
 		c.line(point{242 + dx*0.9, 66}, point{242 + dx, 62}, 3, furWhite)
 	}
 
-	drawCatFace(c, 336, 92, 40)
+	drawCatFace(c, 336, 92, 40, basePalette)
 }
 
 // -----------------------------------------------------------------------------
@@ -658,33 +718,46 @@ func writePNG(path string, img *image.NRGBA) error {
 	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
+// iconSet describe cada uno de los iconos que se escriben en el repositorio.
+var iconSets = []struct {
+	name    string
+	palette catPalette
+	purpose string
+}{
+	{"app_icon", basePalette, "ejecutable, instalador y ventana de bienvenida"},
+	{"app_icon_gray", grayPalette, "System Tray — iniciando (aún no escucha)"},
+	{"app_icon_green", greenPalette, "System Tray — operativo (servidor escuchando)"},
+}
+
 func main() {
 	root := "."
 	if len(os.Args) > 1 {
 		root = os.Args[1]
 	}
 
-	icons := make(map[int]*image.NRGBA, len(icoSizes))
-	for _, s := range icoSizes {
-		icons[s.size] = renderIcon(s.size)
-	}
+	for _, set := range iconSets {
+		icons := make(map[int]*image.NRGBA, len(icoSizes))
+		for _, s := range icoSizes {
+			icons[s.size] = renderIcon(s.size, set.palette)
+		}
 
-	ico, err := encodeICO(icons)
-	if err != nil {
-		fatal(err)
-	}
-	icoPath := filepath.Join(root, "app_icon.ico")
-	if err := os.WriteFile(icoPath, ico, 0o644); err != nil {
-		fatal(err)
-	}
-	fmt.Printf("%s (%d bytes, %d resoluciones)\n", icoPath, len(ico), len(icoSizes))
+		ico, err := encodeICO(icons)
+		if err != nil {
+			fatal(err)
+		}
+		icoPath := filepath.Join(root, set.name+".ico")
+		if err := os.WriteFile(icoPath, ico, 0o644); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("%s (%d bytes, %d resoluciones) — %s\n", icoPath, len(ico), len(icoSizes), set.purpose)
 
-	// PNG para la bandeja de macOS: NSImage no acepta .ico de forma fiable.
-	pngPath := filepath.Join(root, "app_icon.png")
-	if err := writePNG(pngPath, icons[64]); err != nil {
-		fatal(err)
+		// PNG para la bandeja de macOS: NSImage no acepta .ico de forma fiable.
+		pngPath := filepath.Join(root, set.name+".png")
+		if err := writePNG(pngPath, icons[64]); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("%s (64x64)\n", pngPath)
 	}
-	fmt.Printf("%s (64x64)\n", pngPath)
 
 	welcomePath := filepath.Join(root, "welcome_cat.png")
 	welcome := renderWelcome()

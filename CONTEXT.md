@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 10: Pulido Final — CP1252, Icono Tuxedo Embebido y Bienvenida Post-Instalación** — Completado
+**Fase 11: Estabilización de Iconos Dinámicos y Transcodificación de Acentos** — Finalizado
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente).
 
 ## Arquitectura
 
@@ -38,8 +38,11 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Codificación ESC/POS | `ESC t n` + transcodificación UTF-8 → página de códigos | Las ticketeras no entienden UTF-8; CP437 (fábrica) ni siquiera contiene Á Í Ó Ú |
 | Página por defecto | **CP1252** (`ESC t 16` = `1B 74 10`) desde la v1.5.0 | Sus bytes son los de Latin-1, que es lo que espera una ticketera conectada a Windows. Con CP850 la `Á` viaja como `0xB5` y sale como otro símbolo en cuanto el hardware pierde la selección de página |
 | Numeración de páginas | `escpos_code_page_id` en `config.json` | Válvula de escape para clones que numeran sus tablas fuera del estándar Epson, sin recompilar |
-| Tablas de códigos | Generadas de los codecs cp850/cp858/cp1252/cp437 | Cero dependencias externas, valores verificados contra los codecs estándar |
+| Tablas de códigos | `golang.org/x/text/encoding/charmap` | Implementación de referencia del proyecto Go: ~800 líneas de tablas propias sustituidas por cuatro alias que nadie tiene que revisar |
+| Transcodificación | `charmap.Windows1252.NewEncoder().Bytes()` por tramo de texto | Un ticket RAW no es una cadena: sólo se codifican los tramos de texto, no los comandos ni los logos |
 | Icono del agente | `//go:embed app_icon.ico` + `systray.SetIcon` | El binario se sobrescribe en cada actualización: un icono en archivo suelto se perdería |
+| Estado en la bandeja | Icono gris → verde tras `net.Listen` | El color confirma que el socket acepta conexiones, no que se haya lanzado una goroutine |
+| Cierre del agente | `srv.Shutdown(ctx)` en `onExit` + canal `agentDone` | Libera el puerto y no corta un ticket a medio enviar al spooler |
 | Recursos Win32 | `rsrc_windows_amd64.syso` (icono + manifiesto) | Icono en Explorador/Alt+Tab y botones con estilo moderno (Common Controls 6) |
 | Ventana de bienvenida | Win32 nativo (`user32`/`gdi32` vía `syscall`) | Cero dependencias nuevas; `lxn/win` está sin mantenimiento y `fyne` exige CGO + OpenGL |
 | Ilustraciones | Generadas por código (`tools/genassets`) | Recursos reproducibles y auditables en vez de binarios opacos |
@@ -53,15 +56,15 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 cronos-pos-agent/
 ├── main.go              # Entry point: flags CLI, self-healing, reubicación, systray, goroutines
 ├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (6 endpoints)
-├── config.go            # Carga/generación de config.json, AgentVersion (1.5.0), migraciones de esquema
+├── config.go            # Carga/generación de config.json, AgentVersion (1.6.0), migraciones de esquema
 ├── network.go           # ResolvePort: fallback dinámico de puertos con scan
 ├── certs.go             # GenerateCerts: RSA 2048 + X.509 autofirmado nativo
 ├── logger.go            # RotatingLogger: escritura a archivo con rotación 10MB/3 backups
 ├── updater.go           # CheckForUpdates: polling de versión contra servidor central
 ├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
-├── escpos.go            # Motor de codificación: ESC t n, transcodificación y salto de gráficos
-├── escpos_codepages.go  # Tablas generadas CP850 / CP858 / CP1252 / CP437 + fallback ASCII
-├── escpos_test.go       # Tests del motor de codificación (16 casos)
+├── escpos.go            # Motor de codificación: ESC t n, encoder charmap y salto de gráficos
+├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
+├── escpos_test.go       # Tests del motor de codificación (17 casos)
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
 ├── printer_windows.go   # Build tag: windows — spooler, RAW, cola, autostart, killOrphan
@@ -72,13 +75,17 @@ cronos-pos-agent/
 ├── firstrun_windows.go  # Build tag: windows — ventana de bienvenida nativa Win32
 ├── firstrun_darwin.go   # Build tag: darwin — diálogo equivalente con osascript
 ├── app_icon.ico         # Icono del gato tuxedo, 7 resoluciones (16–256 px) — embebido
-├── app_icon.png         # El mismo icono en PNG 64×64 para la barra de menús de macOS
+├── app_icon.png         # El mismo icono en PNG 64×64 (macOS / material de marca)
+├── app_icon_gray.ico    # Estado "iniciando": gato gris — embebido (System Tray)
+├── app_icon_gray.png    # Ídem para la barra de menús de macOS
+├── app_icon_green.ico   # Estado "operativo": gato con punto verde — embebido
+├── app_icon_green.png   # Ídem para la barra de menús de macOS
 ├── welcome_cat.png      # Ilustración 880×440: el gato jugando con la ticketera — embebida
 ├── app.manifest         # Manifiesto Win32: asInvoker + Common Controls 6.0
 ├── rsrc_windows_amd64.syso # Recurso Win32 generado (icono + manifiesto) que enlaza el .exe
 ├── tools/
 │   └── genassets/
-│       └── main.go      # Generador de app_icon.ico/.png y welcome_cat.png (dibujo por código)
+│       └── main.go      # Generador de los 3 iconos y de welcome_cat.png (dibujo por código)
 ├── installer/
 │   └── setup.iss        # Script Inno Setup para instalador silencioso Windows
 ├── .gitignore
@@ -351,7 +358,7 @@ quien registra el auto-arranque en la rama correcta durante su primer arranque
 ### Instalación silenciosa por línea de comandos
 
 ```bash
-CronosAgentSetup-1.5.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+CronosAgentSetup-1.6.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 - `/VERYSILENT`: Sin interfaz gráfica
@@ -416,7 +423,21 @@ anularía y el ticket volvería a imprimir basura.
 Si el payload ya trae su propio `ESC t` en la cabecera (primeros 64 bytes), se
 asume que el frontend gestiona la codificación y el agente no interfiere.
 
-**2. Transcodificación UTF-8 → bytes de la página de códigos**
+**2. Transcodificación UTF-8 → bytes de la página de códigos (encoder Windows-1252)**
+
+Éste es el mecanismo que de verdad arregla los acentos, y el motivo por el que
+el prefijo `ESC t n` por sí solo no bastaba: **el texto llega al agente en
+UTF-8**, donde una `Á` son *dos* bytes (`C3 81`). La ticketera no interpreta
+UTF-8: lee byte a byte contra su tabla activa, así que imprime dos símbolos.
+Hay que convertir la cadena a **un byte por carácter** antes de enviarla.
+
+Desde la Fase 11 esa conversión la hace el codificador oficial de
+`golang.org/x/text/encoding/charmap`, no una tabla mantenida a mano:
+
+```go
+encoder := charmap.Windows1252.NewEncoder()
+encodedBytes, err := encoder.Bytes(textoDelTicket)   // "Á" -> 0xC1
+```
 
 `transcodeToCodePage()` convierte el texto a los bytes que la ticketera espera:
 
@@ -431,14 +452,31 @@ asume que el frontend gestiona la codificación y el agente no interfiere.
 | `Ü` | `C3 9C` | `9A` | `DC` |
 | `¿` | `C2 BF` | `A8` | `BF` |
 
-Las tablas (`escpos_codepages.go`) se generaron a partir de los codecs estándar
-`cp850` / `cp858` / `cp1252` / `cp437` y cubren el rango `0x80–0xFF` completo; el
-ASCII se copia sin traducir porque es idéntico en las cuatro páginas. Cero
-dependencias externas.
+`escpos_codepages.go` ya no contiene tablas: son cuatro alias de `charmap`
+(`Windows1252`, `CodePage850`, `CodePage858`, `CodePage437`). Se pasó de ~800
+líneas generadas y revisadas a mano a la implementación de referencia del
+proyecto Go — la misma que usan el resto de herramientas del ecosistema y que
+nadie de este equipo tiene que auditar. El ASCII se copia sin traducir porque es
+idéntico en las cuatro páginas, y ni siquiera entra en el codificador.
 
-Si una runa no existe en la página activa se degrada a su equivalente ASCII
-(`asciiFallback`: `Á`→`A`, `—`→`-`, `€`→`EUR`, `…`→`...`) y, como último recurso,
-a `?`. Nunca se imprime basura.
+**Degradación cuando la página no representa un carácter.** El codificador
+devuelve error si el texto contiene una runa que la página no tiene. Ese error
+no puede tumbar un ticket, así que el camino rápido (una sola llamada a
+`encoder.Bytes()` por tramo) tiene una red debajo: si falla, ese tramo se
+recorre runa a runa con `charmap.EncodeRune()` y las que sobran se degradan a su
+equivalente ASCII (`asciiFallback`: `Á`→`A`, `—`→`-`, `€`→`EUR`, `…`→`...`) y, en
+último caso, a `?`. Nunca se imprime basura ni se pierde el ticket entero por un
+carácter exótico.
+
+**Por qué no se pasa el payload entero por el codificador.** Sería la forma
+obvia de usar `encoder.Bytes()`, y rompería los tickets con logo: un payload RAW
+**no es una cadena de texto**, sino texto mezclado con comandos y con datos
+binarios. Ver "Por qué el recorrido es conservador" justo debajo — sólo se
+codifican los tramos que de verdad son texto.
+
+**El codificador se crea por impresión, no se comparte.** Es un transformador
+con estado interno y `rawPrint()` puede ejecutarse en paralelo desde varias
+peticiones HTTP; reutilizar uno global sería una condición de carrera.
 
 ### Por qué el recorrido es conservador
 
@@ -455,7 +493,10 @@ comandos. Por eso el recorrido:
   el buffer se copia todo lo que queda: ante un payload truncado, copiar de más
   es más seguro que transcodificar.
 - Copia sin tocar todo byte ASCII (`< 0x80`), que cubre el resto de comandos.
-- Copia tal cual los bytes sueltos que no forman UTF-8 válido.
+- Copia tal cual los bytes sueltos que no forman UTF-8 válido: son binarios.
+- Agrupa las runas UTF-8 válidas consecutivas en **tramos de texto** y pasa cada
+  tramo entero por `encoder.Bytes()`. Un comando ESC/POS nunca empieza por un
+  byte ≥ `0x80`, así que un tramo no puede tragarse una cabecera.
 
 ### Por qué CP1252 es ahora la página por defecto — el caso «†nimo»
 
@@ -520,12 +561,16 @@ Global en `config.json` (`escpos_code_page`, `escpos_transcode`,
 
 ### Cobertura de tests
 
-`escpos_test.go` — 16 casos: bytes exactos de las mayúsculas acentuadas en CP850
+`escpos_test.go` — 17 casos: bytes exactos de las mayúsculas acentuadas en CP850
 y CP1252, `Ánimo` completo con la configuración por defecto (`1B 74 10` + `C1`),
-override del selector, degradación a ASCII en CP437, integridad de los comandos
-ESC/POS, logo raster con UTF-8 incrustado que debe salir intacto, inserción
-después de `ESC @`, respeto a un `ESC t` propio del frontend y resolución de
-alias.
+override del selector, degradación a ASCII dentro de un tramo de texto y en
+CP437, integridad de los comandos ESC/POS, logo raster con UTF-8 incrustado que
+debe salir intacto, inserción después de `ESC @`, respeto a un `ESC t` propio del
+frontend y resolución de alias.
+
+Los tests comprueban **bytes exactos**, así que también sirvieron de red al
+sustituir las tablas propias por `charmap`: si el codificador de `x/text`
+colocara un solo carácter en otra posición, la suite fallaría.
 
 ```bash
 go test ./...   # ejecutar desde Windows o macOS (el paquete no compila en Linux)
@@ -563,15 +608,52 @@ genérico. Embebido, el ejecutable es autónomo.
 systray.SetIcon(trayIcon())
 ```
 
+### Icono dinámico de estado: gris → verde
+
+El icono no sólo identifica al agente, **informa de si está sano**. Son tres
+dibujos del mismo gato generados con paletas distintas:
+
+| Estado | Icono | Cuándo | Tooltip / menú |
+|---|---|---|---|
+| Iniciando | `app_icon_gray.ico` — gato **gris**, ojos apagados | Desde `onReady()`: el proceso vive, pero todavía carga configuración y resuelve el puerto | "Iniciando…" |
+| Operativo | `app_icon_green.ico` — gato normal con **punto verde** | En cuanto el socket acepta conexiones | "Operativo (:9100)" |
+| Detenido | vuelve al **gris** | Si el servidor muere por su cuenta | "Detenido" |
+
+```go
+systray.SetIcon(trayIconStarting())      // gris: aún no escucha
+...
+listener, err := net.Listen("tcp", addr) // el puerto se abre AQUÍ
+...
+systray.SetIcon(trayIconReady())         // verde: ya acepta conexiones
+```
+
+**El puerto se abre con `net.Listen` explícito, no dentro de
+`ListenAndServe()`.** Es la diferencia entre un semáforo honesto y uno
+decorativo: `ListenAndServe` se llama desde una goroutine y devuelve el error
+*después*, así que poner el icono verde antes significaría "hemos lanzado una
+goroutine que quizá lo consiga". Con el listener creado antes, el verde sólo
+aparece cuando el socket está realmente aceptando conexiones; si el bind falla
+—porque otra instancia ganó la carrera por el puerto— el icono se queda gris y
+el motivo queda en el log. `srv.Serve(listener)` recibe ese listener ya abierto.
+
+El punto verde vive en la esquina inferior derecha con un halo blanco. A 16 px
+—el tamaño real en la bandeja de Windows— el color del pelaje no se distingue,
+pero 4 píxeles de verde saturado sí: por eso el estado se marca con un punto y
+no tiñendo el gato entero. El gris, en cambio, desatura todo el dibujo (pelaje,
+ojos y nariz), que es lo que lo hace leerse como "apagado" de un vistazo.
+
 ### Un icono por plataforma
 
 `trayIcon()` está definido dos veces con build tags porque cada System Tray
 exige un formato distinto:
 
-| Plataforma | Archivo | Formato | Motivo |
+| Plataforma | Archivos | Formato | Motivo |
 |---|---|---|---|
-| Windows | `assets_windows.go` → `app_icon.ico` | `.ico` (16, 24, 32, 48, 64, 128, 256 px) | `Shell_NotifyIcon` carga el icono con `LoadImage`, que sólo lee `.ico` |
-| macOS | `assets_darwin.go` → `app_icon.png` | PNG 64×64 | `NSStatusItem` se dibuja con `NSImage`, que reescala a 16 pt |
+| Windows | `assets_windows.go` → `app_icon{,_gray,_green}.ico` | `.ico` (16, 24, 32, 48, 64, 128, 256 px) | `Shell_NotifyIcon` carga el icono con `LoadImage`, que sólo lee `.ico` |
+| macOS | `assets_darwin.go` → `app_icon_{gray,green}.png` | PNG 64×64 | `NSStatusItem` se dibuja con `NSImage`, que reescala a 16 pt |
+
+`trayIconStarting()` y `trayIconReady()` están definidas en los dos archivos con
+build tags, así que `main.go` cambia de estado sin saber en qué plataforma corre.
 
 Las resoluciones pequeñas del `.ico` se dibujan por separado, no reduciendo la
 grande: a 16×16 cualquier detalle se convierte en ruido, así que el icono es
@@ -615,6 +697,51 @@ Así el repositorio no arrastra binarios opacos de origen desconocido: el gato
 es reproducible, auditable y modificable en un `diff`. El `.ico` se serializa a
 mano (ICONDIR + ICONDIRENTRY + DIB de 32 bits, con las dos resoluciones grandes
 comprimidas en PNG para no engordar el archivo 260 KB).
+
+## Cierre Limpio del Agente
+
+Salir del agente no es sólo terminar el proceso: hay un socket escuchando en
+`127.0.0.1:9100` y puede haber un ticket viajando hacia el spooler.
+
+### Un único punto de salida
+
+Las tres formas de cerrar el agente —**"Salir"** en el menú del System Tray,
+`SIGINT`/`SIGTERM`, y el cierre de sesión de Windows— convergen en
+`systray.Quit()`, que hace terminar el bucle de la bandeja y llama a `onExit()`.
+Ahí se libera todo:
+
+```go
+func onExit() {
+    exitOnce.Do(func() {
+        close(agentDone)      // detiene el polling de updates y el bucle del menú
+        shutdownHTTPServer()  // cierra el servidor y libera el puerto
+        log.Println("Cronos Agent finalizado.")
+    })
+}
+```
+
+| Recurso | Cómo se libera |
+|---|---|
+| Socket de escucha | `srv.Shutdown(ctx)`, que cierra el listener y, con él, el puerto |
+| Peticiones en curso | `Shutdown` espera a que terminen, con un tope de 5 s (`shutdownTimeout`); pasado ese plazo, `srv.Close()` |
+| Goroutine del updater | Termina por el `select` sobre `agentDone` (antes era un `for range ticker.C` infinito) |
+| Goroutine del menú | Ídem: un `case <-agentDone: return` la saca del bucle |
+| Archivo de log | El `defer logCloser.Close()` de `main()`, que corre después de `systray.Run` |
+
+### Detalles que importan
+
+- **`Shutdown` y no `Close`**: cerrar a lo bruto cortaría una petición
+  `POST /api/print` a medio escribir en el spooler, y la ticketera imprimiría
+  medio ticket. `Shutdown` deja terminar lo que ya estaba en marcha.
+- **Liberar el puerto es funcional, no cosmético**: si el socket queda ocupado,
+  el siguiente arranque cae al 9101 por el fallback de `ResolvePort` y el
+  frontend, que sigue apuntando al 9100, deja de encontrar el agente.
+- **`sync.Once`**: cerrar dos veces un canal entra en pánico, y la salida puede
+  llegar por varias vías a la vez. `exitOnce` hace `onExit()` idempotente sin
+  depender de que systray las serialice.
+- **`atomic.Pointer[http.Server]`**: quien guarda el servidor (`onReady`) y quien
+  lo cierra (`onExit`) son goroutines distintas. El `Swap(nil)` además garantiza
+  que sólo se cierre una vez.
 
 ## Ventana de Bienvenida Post-Instalación (`--first-run`)
 
@@ -672,8 +799,8 @@ instancia definitiva, no la temporal que está a punto de terminar.
 | `fyne` | Requiere CGO y OpenGL, y añade decenas de MB al binario para una ventana que se abre una vez en la vida del equipo |
 | `MessageBox` nativa | No admite imagen propia, y el requisito es mostrar la ilustración |
 
-Resultado: **cero dependencias nuevas** en `go.mod` y el ejecutable sigue siendo
-un único archivo autónomo.
+Resultado: la ventana no añadió **ninguna dependencia** a `go.mod` y el
+ejecutable sigue siendo un único archivo autónomo.
 
 Detalle de implementación: `StretchDIBits` ignora el canal alfa de un DIB
 `BI_RGB`, así que la transparencia del PNG se compone contra el blanco de la
@@ -760,10 +887,16 @@ Enviado:   1B 40  1B 74 10   41 52 54 CD    43 55 4C 4F 20 D1    4F D1    4F 0A 
 | `github.com/alexbrainman/printer` | v0.0.0-20200912 | Windows Print Spooler |
 | `github.com/atotto/clipboard` | v0.1.4 | Copiar el token de seguridad al portapapeles del SO (multiplataforma) |
 | `golang.org/x/sys` | v0.1.0+ | Registro de Windows |
+| `golang.org/x/text` | v0.23.0 | `encoding/charmap`: codificación UTF-8 → CP1252/CP850/CP858/CP437 |
 
-La Fase 10 **no añadió ninguna dependencia**: el icono se embebe con `//go:embed`
-(stdlib), las ilustraciones se generan con `image`/`image/png` (stdlib) y la
-ventana de bienvenida habla directamente con `user32`/`gdi32` vía `syscall`.
+`golang.org/x/text` es la única dependencia añadida en la Fase 11, y **resta
+código en vez de sumarlo**: sustituye las ~800 líneas de tablas de códigos que
+se mantenían en este repositorio. Se fija en la v0.23.0 porque las versiones
+posteriores exigen Go ≥ 1.25 y el proyecto compila con la 1.24.
+
+Todo lo demás sigue siendo stdlib: el icono se embebe con `//go:embed`, las
+ilustraciones se generan con `image`/`image/png` y la ventana de bienvenida
+habla directamente con `user32`/`gdi32` vía `syscall`.
 
 `github.com/akavel/rsrc` se usa como herramienta puntual (`go run …@v0.10.2`)
 para regenerar `rsrc_windows_amd64.syso`; no aparece en `go.mod` ni se enlaza.
@@ -788,10 +921,13 @@ Los recursos gráficos ya están versionados en el repositorio, así que compila
 **no** requiere regenerarlos. Sólo hace falta si se cambia el dibujo del gato:
 
 ```bash
-go run ./tools/genassets                       # app_icon.ico, app_icon.png, welcome_cat.png
+go run ./tools/genassets                       # los 3 .ico + los 3 .png + welcome_cat.png
 go run github.com/akavel/rsrc@v0.10.2 \        # rsrc_windows_amd64.syso (icono + manifiesto)
   -ico app_icon.ico -manifest app.manifest -arch amd64 -o rsrc_windows_amd64.syso
 ```
+
+El `.syso` embebe la versión declarada en `app.manifest`, así que hay que
+regenerarlo al subir de versión.
 
 ### Pipeline completo de distribución Windows:
 
@@ -804,9 +940,9 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc \
 # 2. Generar instalador (ejecutar en Windows)
 ISCC.exe installer/setup.iss
 
-# 3. Resultado: installer/Output/CronosAgentSetup-1.5.0.exe
+# 3. Resultado: installer/Output/CronosAgentSetup-1.6.0.exe
 # 4. Despliegue silencioso en cajas de cobro:
-#    CronosAgentSetup-1.5.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+#    CronosAgentSetup-1.6.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 ## Fases — Historial Completo
@@ -859,6 +995,19 @@ ISCC.exe installer/setup.iss
 - ~~Flag `--first-run`, marcador `welcome-shown` por versión y propagación al relanzado~~ ✓
 - ~~Instalador: icono propio, lanzamiento con `--first-run` y omisión de la ventana en `/VERYSILENT`~~ ✓
 - ~~Dos tests nuevos (`Ánimo` con la configuración por defecto y override del selector) y versión 1.5.0~~ ✓
+
+### Fase 11: Estabilización de Iconos Dinámicos y Transcodificación de Acentos ✓
+- ~~Icono dinámico en el System Tray: gris (iniciando) → verde (operativo), y vuelta a gris si el servidor cae~~ ✓
+- ~~El verde se activa tras un `net.Listen` explícito: significa "el socket acepta conexiones", no "se ha lanzado una goroutine"~~ ✓
+- ~~Tooltip y entrada de estado del menú sincronizados con el icono (`SetTooltip` / `mStatus.SetTitle`)~~ ✓
+- ~~Tercera y segunda variantes del gato generadas por `tools/genassets` con paletas propias y punto de estado~~ ✓
+- ~~Transcodificación con el codificador oficial `charmap.Windows1252.NewEncoder()` de `golang.org/x/text`~~ ✓
+- ~~Eliminadas ~800 líneas de tablas de páginas de códigos mantenidas a mano (`escpos_codepages.go`)~~ ✓
+- ~~Codificación por tramos de texto, con degradación runa a runa cuando la página no representa un carácter~~ ✓
+- ~~Codificador creado por impresión: `rawPrint()` puede ejecutarse en paralelo desde varias peticiones~~ ✓
+- ~~Cierre limpio en `onExit()`: `srv.Shutdown(ctx)` con 5 s de gracia, puerto liberado y goroutines detenidas~~ ✓
+- ~~Canal `agentDone` + `sync.Once` para que "Salir", SIGINT y SIGTERM converjan en una salida idempotente~~ ✓
+- ~~Test nuevo de degradación dentro de un tramo de texto (17 casos) y versión 1.6.0~~ ✓
 
 ## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
 

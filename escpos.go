@@ -5,6 +5,9 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
 )
 
 // Comandos ESC/POS relevantes para la codificación de caracteres.
@@ -25,9 +28,9 @@ type CodePage struct {
 	Name string
 	// Selector es el valor "n" del comando "ESC t n" que activa la página.
 	Selector byte
-	// Table mapea cada runa Unicode al byte que la representa en la página.
-	// Sólo contiene el rango 0x80–0xFF; el ASCII se copia sin traducir.
-	Table map[rune]byte
+	// Charmap es la tabla de caracteres de golang.org/x/text que traduce el
+	// texto UTF-8 a los bytes de esta página.
+	Charmap *charmap.Charmap
 	// Description es la etiqueta legible que se escribe en el log.
 	Description string
 }
@@ -60,10 +63,10 @@ const defaultCodePage = "cp1252"
 // aunque ambas cubran el español. Un modelo con una numeración propia se
 // corrige sin recompilar con "escpos_code_page_id" en config.json.
 var supportedCodePages = map[string]CodePage{
-	"cp850":  {Name: "cp850", Selector: 0x02, Table: codePageCP850, Description: "PC850 Multilingual (Latin-1)"},
-	"cp858":  {Name: "cp858", Selector: 0x13, Table: codePageCP858, Description: "PC858 Euro (Latin-1 + €)"},
-	"cp1252": {Name: "cp1252", Selector: 0x10, Table: codePageCP1252, Description: "WPC1252 (Windows Latin-1)"},
-	"cp437":  {Name: "cp437", Selector: 0x00, Table: codePageCP437, Description: "PC437 USA/Standard Europe"},
+	"cp850":  {Name: "cp850", Selector: 0x02, Charmap: codePageCP850, Description: "PC850 Multilingual (Latin-1)"},
+	"cp858":  {Name: "cp858", Selector: 0x13, Charmap: codePageCP858, Description: "PC858 Euro (Latin-1 + €)"},
+	"cp1252": {Name: "cp1252", Selector: 0x10, Charmap: codePageCP1252, Description: "WPC1252 (Windows Latin-1)"},
+	"cp437":  {Name: "cp437", Selector: 0x00, Charmap: codePageCP437, Description: "PC437 USA/Standard Europe"},
 }
 
 // codePageAliases acepta las formas en que un frontend puede nombrar una
@@ -162,7 +165,7 @@ func BuildESCPOSPayload(data []byte, opts EncodingOptions) ([]byte, error) {
 
 	payload := data
 	if opts.Transcode {
-		payload = transcodeToCodePage(payload, cp.Table)
+		payload = transcodeToCodePage(payload, cp.Charmap)
 	}
 
 	return insertCodePageCommand(payload, opts.Selector(cp)), nil
@@ -209,20 +212,29 @@ func insertCodePageCommand(data []byte, selector byte) []byte {
 }
 
 // transcodeToCodePage convierte las secuencias UTF-8 del payload a los bytes de
-// la página de códigos indicada.
+// la página de códigos indicada, usando el codificador de
+// golang.org/x/text/encoding/charmap:
 //
-// El recorrido es conservador a propósito, porque un ticket RAW mezcla texto con
-// comandos y con datos binarios (logos, imágenes raster):
+//	encoder := charmap.Windows1252.NewEncoder()
+//	bytes, err := encoder.Bytes(textoDelTicket)   // "Á" -> 0xC1
+//
+// El recorrido es conservador a propósito, porque un ticket RAW **no es una
+// cadena de texto**: mezcla texto con comandos y con datos binarios (logos,
+// imágenes raster). Pasar el payload entero por el codificador corrompería el
+// ticket, así que sólo se codifican los tramos que de verdad son texto:
 //
 //   - Los comandos gráficos se detectan por su cabecera y sus datos binarios se
 //     copian en bloque sin interpretarlos (ver graphicsCommandLength).
 //   - Los bytes ASCII (< 0x80) se copian sin tocar: son idénticos en las cuatro
 //     páginas y cubren todos los comandos ESC/POS.
-//   - Las secuencias UTF-8 válidas se traducen por su byte equivalente; si la
-//     runa no existe en la página de códigos se usa su aproximación ASCII
-//     (asciiFallback) y, en último caso, '?'.
-//   - Los bytes sueltos que no forman UTF-8 válido se copian tal cual.
-func transcodeToCodePage(data []byte, table map[rune]byte) []byte {
+//   - Los tramos de runas UTF-8 válidas se codifican de una vez con el encoder.
+//   - Los bytes sueltos que no forman UTF-8 válido se copian tal cual: son
+//     binarios, no texto.
+func transcodeToCodePage(data []byte, cm *charmap.Charmap) []byte {
+	// El codificador se crea por llamada y no se comparte: es un transformador
+	// con estado interno y rawPrint puede ejecutarse en paralelo desde varias
+	// peticiones HTTP.
+	encoder := cm.NewEncoder()
 	out := make([]byte, 0, len(data))
 
 	for i := 0; i < len(data); {
@@ -247,16 +259,50 @@ func transcodeToCodePage(data []byte, table map[rune]byte) []byte {
 			continue
 		}
 
-		if mapped, ok := table[r]; ok {
-			out = append(out, mapped)
-		} else if fallback, ok := asciiFallback[r]; ok {
-			out = append(out, fallback...)
-		} else {
-			out = append(out, '?')
-		}
+		// Tramo de texto: se acumulan las runas válidas consecutivas y se
+		// codifican en una sola pasada. Un comando ESC/POS nunca empieza por un
+		// byte ≥ 0x80, así que el tramo no puede tragarse una cabecera.
+		start := i
 		i += size
+		for i < len(data) && data[i] >= utf8.RuneSelf {
+			r, size := utf8.DecodeRune(data[i:])
+			if r == utf8.RuneError && size <= 1 {
+				break
+			}
+			i += size
+		}
+
+		out = append(out, encodeTextRun(encoder, cm, data[start:i])...)
 	}
 
+	return out
+}
+
+// encodeTextRun codifica un tramo de texto UTF-8 a la página de códigos activa.
+//
+// El camino rápido es una sola llamada al encoder de charmap. Si el tramo
+// contiene alguna runa que la página no representa, el encoder devuelve error y
+// entonces —y sólo entonces— se recorre runa a runa para degradarla a su
+// equivalente ASCII (`asciiFallback`: `Á`→`A`, `€`→`EUR`, `…`→`...`) y, como
+// último recurso, a '?'. Nunca se imprime basura ni se aborta el ticket por un
+// carácter exótico.
+func encodeTextRun(encoder *encoding.Encoder, cm *charmap.Charmap, run []byte) []byte {
+	if encoded, err := encoder.Bytes(run); err == nil {
+		return encoded
+	}
+
+	out := make([]byte, 0, len(run))
+	for _, r := range string(run) {
+		if b, ok := cm.EncodeRune(r); ok {
+			out = append(out, b)
+			continue
+		}
+		if fallback, ok := asciiFallback[r]; ok {
+			out = append(out, fallback...)
+			continue
+		}
+		out = append(out, '?')
+	}
 	return out
 }
 
