@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 11: Estabilización de Iconos Dinámicos y Transcodificación de Acentos** — Finalizado
+**Fase 12: Calidad Empresarial del Instalador** — Finalizado
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código).
 
 ## Arquitectura
 
@@ -108,6 +108,11 @@ ejecuta el agente. Ver "Ubicación Permanente del Binario".
 | `private-key.pem` | `%LOCALAPPDATA%\CronosAgent\` | Junto al binario |
 | `digital-certificate.txt` | `%LOCALAPPDATA%\CronosAgent\` | Junto al binario |
 | `welcome-shown` | `%LOCALAPPDATA%\CronosAgent\` | Junto al binario |
+
+De esa lista, el desinstalador de Windows **sólo borra** los logs y el marcador
+`welcome-shown`. El `config.json`, la clave privada y el certificado se preservan
+para que una reinstalación o una actualización no rompan el vínculo de la caja
+con el POS (ver "Desinstalación — política de preservación de estado").
 
 ## Archivo `config.json` — Esquema Completo
 
@@ -285,7 +290,7 @@ ruta distinta de la del binario en ejecución (por ejemplo tras mover la app a
 | Flag | Descripción |
 |---|---|
 | `--generate-certs` | Genera `private-key.pem` y `digital-certificate.txt` en el directorio de datos y sale |
-| `--disable-autostart` | Elimina el auto-arranque y guarda la preferencia. Lo usa el desinstalador |
+| `--disable-autostart` | Elimina el auto-arranque y guarda `"autostart": false` en `config.json`. Lo usa la opción "Iniciar con el Sistema" del System Tray. **El desinstalador ya no lo invoca** (ver "Desinstalación — política de preservación de estado") |
 | `--no-install` | No reubica el binario a la ruta permanente (uso en desarrollo) |
 | `--relaunched` | Uso interno: marca la instancia ya relanzada desde la ruta permanente |
 | `--first-run` | Arranca con normalidad y además abre la ventana de bienvenida. Lo usa el instalador al terminar la barra de progreso |
@@ -330,30 +335,66 @@ ISCC.exe installer/setup.iss
 
 | Paso | Acción | Detalle |
 |---|---|---|
-| 1 | Cierra instancias previas | `taskkill /F /IM cronos-pos-agent.exe` via `PrepareToInstall()` |
-| 2 | Copia binario a la ruta permanente | `C:\Program Files\CronosAgent\` con admin, `C:\ProgramData\CronosAgent\` sin elevación (`PermanentInstallDir`) |
-| 3 | Genera certificados SSL | `--generate-certs` en modo oculto y con `runasoriginaluser` |
-| 4 | Registra el autostart | `HKCU\...\Run` → `CronosPOSAgent` con la ruta **entre comillas dobles** |
-| 5 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--first-run` y **sin** `runhidden`, para que se vea la ventana de bienvenida; en `/VERYSILENT`, sin el flag y con `runhidden` |
+| 1 | Solicita elevación (UAC) | `PrivilegesRequired=admin`: el diálogo de consentimiento aparece **antes** de escribir un solo archivo |
+| 2 | Cierra instancias previas | `taskkill /F /IM cronos-pos-agent.exe` via `PrepareToInstall()` |
+| 3 | Copia binario a la ruta permanente | `C:\Program Files\CronosAgent\` con admin, `C:\ProgramData\CronosAgent\` sin elevación (`PermanentInstallDir`) |
+| 4 | Crea los accesos directos | Menú de Inicio (`{group}`) y Escritorio (`{autodesktop}`) — comunes a todos los usuarios en instalación elevada |
+| 5 | Genera certificados SSL | `--generate-certs` en modo oculto y con `runasoriginaluser` |
+| 6 | Registra el autostart | `HKCU\...\Run` → `CronosPOSAgent` con la ruta **entre comillas dobles** |
+| 7 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--first-run` y **sin** `runhidden`, para que se vea la ventana de bienvenida; en `/VERYSILENT`, sin el flag y con `runhidden` |
 
 El instalador usa el mismo gato tuxedo como icono (`SetupIconFile=..\app_icon.ico`),
 y "Aplicaciones instaladas" lo muestra a través del recurso Win32 del propio
 ejecutable (`UninstallDisplayIcon={app}\cronos-pos-agent.exe`).
 
-**`PrivilegesRequired=admin` + `PrivilegesRequiredOverridesAllowed=dialog commandline`:**
-se pide elevación para instalar en Program Files; si no hay credenciales de
-administrador, Inno reintenta sin elevar y el destino cae a `C:\ProgramData\CronosAgent`,
-que también es permanente y escribible sin admin. El despliegue silencioso sigue
-funcionando en ambos casos.
+### Elevación de privilegios (UAC) — `PrivilegesRequired=admin`
 
-**`runasoriginaluser` es imprescindible** en los pasos 3 y 5: cuando el
+**Qué hace.** Marca el manifiesto del `Setup.exe` de forma que Windows muestre el
+diálogo de consentimiento de UAC **antes** de que el instalador escriba nada. El
+proceso arranca ya elevado, no a mitad de la instalación.
+
+**Por qué es estricto y no "cuando haga falta".** Sin elevación las dos
+operaciones de las que depende esta instalación fallan *tarde* y en silencio:
+
+| Operación | Qué pasa sin elevación |
+|---|---|
+| Escribir en `C:\Program Files\CronosAgent\` | Acceso denegado con el binario ya extraído: instalación a medias |
+| Crear los accesos directos comunes (`{group}`, `{autodesktop}`) | Sólo se crean para el usuario actual, no para el resto de turnos de la caja |
+| Escribir el auto-arranque en el perfil correcto | La entrada acaba en la rama del usuario equivocado |
+
+Pedir admin por adelantado convierte una instalación rota en una decisión que el
+operador toma antes de que ocurra nada.
+
+**`PrivilegesRequiredOverridesAllowed=dialog commandline`** mantiene el
+despliegue vivo cuando no hay credenciales de administrador: Inno reintenta sin
+elevar y `PermanentInstallDir` cae a `C:\ProgramData\CronosAgent`, que también es
+permanente y escribible sin admin. La instalación silenciosa
+(`/VERYSILENT`) funciona en ambos modos.
+
+**`runasoriginaluser` es imprescindible** en los pasos 5 y 7: cuando el
 instalador corre elevado, `HKCU` y `%LOCALAPPDATA%` son los del administrador y
 no los del operador de la caja. Ejecutando el agente como el usuario original,
 el token, los certificados y la clave de auto-arranque acaban en el perfil
-correcto. Por el mismo motivo la sección `[Registry]` lleva
-`Check: not IsAdminInstallMode`: en instalaciones elevadas es el propio agente
-quien registra el auto-arranque en la rama correcta durante su primer arranque
-(`EnsureAutostartRegistered`).
+correcto. Por el mismo motivo la sección `[Registry]` y la entrada `[Dirs]`
+llevan `Check: not IsAdminInstallMode`: en instalaciones elevadas es el propio
+agente quien registra el auto-arranque y crea su carpeta de datos en el perfil
+correcto durante su primer arranque (`EnsureAutostartRegistered`).
+
+### Accesos directos
+
+| Acceso directo | Ruta | Se elimina al desinstalar |
+|---|---|---|
+| Menú de Inicio | `{group}\Cronos POS Agent` | Sí, automáticamente |
+| Escritorio | `{autodesktop}\Cronos POS Agent` | Sí, automáticamente |
+
+`{group}` y `{autodesktop}` siguen el modo de instalación: en una instalación
+elevada resuelven a las ubicaciones **comunes** (todos los usuarios), que es lo
+que necesita una caja compartida entre turnos; sin elevación caen al perfil del
+usuario actual.
+
+Inno registra ambos en el log de desinstalación, así que el desinstalador los
+borra solo: **no hay entradas de `[UninstallDelete]` para los accesos directos**,
+y añadirlas sería redundante.
 
 ### Instalación silenciosa por línea de comandos
 
@@ -365,15 +406,181 @@ CronosAgentSetup-1.6.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 - `/SUPPRESSMSGBOXES`: Sin diálogos de confirmación
 - `/NORESTART`: No reiniciar Windows
 
-### Desinstalación
+### Desinstalación — política de preservación de estado
 
-El desinstalador (generado automáticamente por Inno Setup):
-1. Mata el proceso del agente (`taskkill`)
-2. Ejecuta `cronos-pos-agent.exe --disable-autostart` con `runasoriginaluser`, que
-   elimina la clave del registro de la rama `HKCU` del operador real
-3. Limpia `config.json`, logs y certificados de `%LOCALAPPDATA%\CronosAgent`, más
-   los restos equivalentes junto al binario de instalaciones ≤ 1.3.0
-4. Elimina el binario y las carpetas si quedan vacías
+El desinstalador (`unins000.exe`, generado por Inno Setup) es **limpio pero
+respetuoso**: se lleva el programa, pero no el vínculo de la caja con el POS.
+
+#### Qué se elimina
+
+| Elemento | Mecanismo |
+|---|---|
+| Proceso del agente | `taskkill /F /IM cronos-pos-agent.exe` (`[UninstallRun]`) |
+| Clave de auto-arranque `HKCU\...\Run\CronosPOSAgent` | `reg delete` con `runasoriginaluser` (+ `uninsdeletevalue` en instalaciones sin elevar) |
+| Acceso directo del Menú de Inicio y del Escritorio | Log de desinstalación de Inno (automático) |
+| `cronos-pos-agent.exe` y `unins000.*` | Log de desinstalación de Inno (automático) |
+| `cronos-agent.log` y sus rotaciones `.1`–`.3` | `PurgeDisposableData()` en `[Code]` |
+| Marcador `welcome-shown` | `PurgeDisposableData()` — así una reinstalación vuelve a saludar al operador |
+| `cronos-pos-agent.exe.old` (resto de una auto-reubicación) | `PurgeDisposableData()` |
+| Carpeta `{app}` | `Type: dirifempty` — sólo si no quedó nada preservado dentro |
+
+#### Qué se preserva — y por qué
+
+| Archivo | Por qué no puede borrarse |
+|---|---|
+| `config.json` | Contiene el `api_token` que el frontend del POS ya tiene configurado en su header `X-Cronos-Agent-Token`. Borrarlo obliga a re-vincular la caja a mano tras cada actualización |
+| `private-key.pem` | Clave privada RSA generada **para esa máquina**. Regenerarla invalida el certificado que el navegador ya aceptó |
+| `digital-certificate.txt` | Certificado X.509 autofirmado emparejado con esa clave |
+| Cualquier archivo con `token` en el nombre, o con extensión `.pem`, `.key`, `.pfx`, `.crt`, `.cer` | Regla de guarda por patrón: protege el material de seguridad que una versión futura del agente escriba, antes de que este script se entere |
+
+La carpeta que los contiene, `%LOCALAPPDATA%\CronosAgent\`, **nunca se destruye**.
+
+#### Cómo se implementa la garantía
+
+Tres mecanismos que se refuerzan entre sí:
+
+1. **`[Files]` no puede resolverlo — y por eso no se usa `uninsneveruninstall`
+   ahí.** Esa bandera protege archivos que el instalador *entrega*, y este
+   instalador entrega exactamente uno: el ejecutable, que sí debe borrarse. El
+   `config.json` lo genera el agente en su primer arranque, así que nunca entra
+   en el log de desinstalación de Inno.
+2. **`[Dirs]` con `uninsneveruninstall`** sobre `%LOCALAPPDATA%\CronosAgent`:
+   marca la carpeta de datos como no reclamable aunque quedase vacía. Es la
+   mitad declarativa del contrato. Lleva `Check: not IsAdminInstallMode` porque
+   en una instalación elevada `{localappdata}` es el perfil del administrador, no
+   el del operador; en ese caso la carpeta la crea el propio agente.
+3. **Código Pascal en `[Code]`** — la mitad que decide archivo por archivo:
+
+```pascal
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    PurgeDisposableData(ExpandConstant('{localappdata}\{#AppFolderName}'));
+    PurgeDisposableData(ExpandConstant('{app}'));
+  end;
+end;
+```
+
+`PurgeDisposableData()` recorre la carpeta y borra **sólo** lo que
+`IsDisposableDataFile()` autoriza (logs, `welcome-shown`, `.old`). Es una lista
+**blanca, no negra**: un archivo que no sea ni protegido ni desechable —una copia
+de seguridad del operador, un volcado de soporte, algo que escriba una versión
+futura— se queda donde está. Los protegidos se registran en el log de
+desinstalación (`Log('Preserved (user state): ...')`) para que soporte pueda
+verificarlo con `/LOG`.
+
+Se ejecuta en `usUninstall` y no en `usPostUninstall` a propósito: tiene que
+correr **antes** de que Inno procese `[UninstallDelete]`, o el barrido
+`dirifempty` sobre `{app}` todavía vería los logs rotados y dejaría una carpeta
+vacía atrás.
+
+La sección `[UninstallDelete]` quedó reducida a un único `dirifempty`: todo lo
+demás pasa por la lista blanca.
+
+#### Por qué el desinstalador ya no llama a `--disable-autostart`
+
+Es la consecuencia directa de preservar el `config.json`. Ese flag hace dos
+cosas: borra la clave del registro **y** persiste `"autostart": false` en el
+`config.json`. Con el archivo sobreviviendo a la desinstalación, una
+reinstalación posterior heredaría la preferencia desactivada, y
+`EnsureAutostartRegistered()` —que respeta la preferencia del usuario— no
+volvería a registrar la entrada: la caja arrancaría sin agente tras el siguiente
+reinicio, sin ningún error visible.
+
+El desinstalador borra ahora el valor directamente:
+
+```
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v CronosPOSAgent /f
+```
+
+con `runasoriginaluser`, que es lo que hace que aterrice en la rama del operador
+real y no en la del administrador que ejecutó la desinstalación elevada. El flag
+`--disable-autostart` sigue existiendo en el agente para la opción "Iniciar con
+el Sistema" del System Tray, donde desactivar la preferencia **sí** es la
+intención del usuario.
+
+#### Restos de instalaciones ≤ 1.3.0
+
+Aquellas versiones guardaban los datos junto al binario. `PurgeDisposableData()`
+se ejecuta también sobre `{app}` con exactamente las mismas reglas: se lleva los
+logs y el `.old`, y deja intactos el `config.json` y los certificados que
+pudieran quedar ahí. Por eso `Type: dirifempty; Name: "{app}"` es un no-op
+mientras siga habiendo estado preservado dentro.
+
+## Firma de Código (Authenticode) — Infraestructura Preparada
+
+El script está listo para firmar, pero **sin certificado no firma**: las dos
+directivas van comentadas en `[Setup]` para que la compilación siga funcionando
+en una máquina sin material criptográfico.
+
+```ini
+; SignTool=signtool sign /a /tr http://timestamp.digicert.com /td sha256 /fd sha256 $f
+; SignedUninstaller=yes
+```
+
+### Qué resuelve
+
+Un `Setup.exe` sin firmar dispara la advertencia **"Editor desconocido"** de
+Windows SmartScreen, que en una caja de cobro con políticas restrictivas suele
+ser un bloqueo duro, no un aviso. Firmar la sustituye por el nombre del titular
+del certificado.
+
+### Cómo se inyecta el certificado
+
+Inno Setup **nunca guarda el certificado**. La directiva `SignTool` referencia
+una herramienta *con nombre* que define la máquina de compilación, de modo que
+el `.pfx` y su contraseña se quedan fuera de este repositorio y fuera del `.iss`.
+
+1. **Definir la herramienta con nombre.** En el IDE de Inno Setup
+   (`Tools > Configure Sign Tools...`, llamándola `signtool`), o por compilación
+   desde la línea de comandos, que es lo que debe hacer el pipeline:
+
+   ```bash
+   ISCC.exe /Ssigntool="C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe $p" installer\setup.iss
+   ```
+
+   `$p` se sustituye por los parámetros escritos en la directiva `SignTool`, y
+   `$f` por el archivo que se está firmando. El pipeline debería importar el
+   certificado al almacén de la máquina **antes** de compilar:
+
+   ```bash
+   certutil -f -p %CERT_PASSWORD% -importpfx cert.pfx
+   ```
+
+   Así `/a` lo selecciona automáticamente y ninguna contraseña llega nunca a una
+   línea de comandos ni a un log de CI.
+
+2. **Descomentar las dos directivas.** `SignedUninstaller=yes` firma también
+   `unins000.exe`: sin ella, el camino de desinstalación seguiría levantando
+   exactamente la advertencia que el de instalación ya no levanta.
+
+3. **Firmar también el binario del agente**, antes de compilar el instalador,
+   porque SmartScreen inspecciona igualmente el `.exe` que acaba en Program
+   Files:
+
+   ```bash
+   signtool sign /a /tr http://timestamp.digicert.com /td sha256 /fd sha256 build\cronos-pos-agent.exe
+   ```
+
+### `/tr` no es opcional
+
+`/tr http://timestamp.digicert.com /td sha256` añade un sello de tiempo RFC 3161.
+Sin él, **todas** las firmas dejan de validar el día que caduque el certificado
+—incluidas las copias ya desplegadas en las cajas de los clientes—. Con él, los
+binarios firmados siguen siendo válidos indefinidamente, porque la validación
+comprueba que el certificado estaba vigente *en el momento de firmar*.
+
+### Parámetros de la firma
+
+| Parámetro | Qué hace |
+|---|---|
+| `/a` | Selecciona automáticamente el certificado de firma de código del almacén |
+| `/tr <url>` | Sello de tiempo RFC 3161 |
+| `/td sha256` | Algoritmo de hash del sello de tiempo |
+| `/fd sha256` | Algoritmo de hash del archivo (SHA-1 lleva años rechazado) |
+| `$f` | Marcador que Inno sustituye por el archivo a firmar |
+| `$p` | Marcador que la herramienta con nombre sustituye por estos parámetros |
 
 ## Codificación de Acentos en Impresoras Térmicas (ESC/POS)
 
@@ -1009,6 +1216,16 @@ ISCC.exe installer/setup.iss
 - ~~Canal `agentDone` + `sync.Once` para que "Salir", SIGINT y SIGTERM converjan en una salida idempotente~~ ✓
 - ~~Test nuevo de degradación dentro de un tramo de texto (17 casos) y versión 1.6.0~~ ✓
 
+### Fase 12: Calidad Empresarial del Instalador ✓
+- ~~Elevación estricta documentada: `PrivilegesRequired=admin` con fallback a `C:\ProgramData` vía `PrivilegesRequiredOverridesAllowed`~~ ✓
+- ~~Accesos directos gestionados en Menú de Inicio (`{group}`) y Escritorio (`{autodesktop}`), eliminados automáticamente al desinstalar~~ ✓
+- ~~Desinstalador que preserva `config.json`, `private-key.pem` y `digital-certificate.txt`: el vínculo con el POS sobrevive a reinstalaciones y actualizaciones~~ ✓
+- ~~Carpeta de datos marcada `uninsneveruninstall` en `[Dirs]` y ausente de `[UninstallDelete]`~~ ✓
+- ~~`PurgeDisposableData()` en `[Code]`: lista blanca de archivos desechables, con guarda por patrón (`token`, `.pem`, `.key`, `.pfx`, `.crt`, `.cer`) para material de seguridad futuro~~ ✓
+- ~~Limpieza del auto-arranque con `reg delete` + `runasoriginaluser` en vez de `--disable-autostart`, para no persistir `"autostart": false` en un `config.json` que ahora sobrevive~~ ✓
+- ~~Infraestructura de firma de código: `SignTool` y `SignedUninstaller` comentados, con el procedimiento de inyección del certificado documentado en los comentarios del `.iss`~~ ✓
+- ~~Comentarios del `.iss` unificados en inglés, explicando qué hace cada directiva y cómo se sostiene la garantía de preservación~~ ✓
+
 ## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
 
 Los subprocesos nativos de Windows (`powershell` para `Get-PrintJob`, `tasklist` para self-healing) provocaban un parpadeo de ventana de consola/PowerShell cada vez que se consultaba la lista o la cola de impresoras. Para eliminarlo por completo se inyecta la bandera nativa `CREATE_NO_WINDOW` (`0x08000000`) junto con `HideWindow` en el `SysProcAttr` de **cada** invocación.
@@ -1145,5 +1362,7 @@ ret, _, _ := shellExecute.Call(
 ### Pendiente (fuera de scope actual)
 - Comunicación bidireccional (WebSocket/SSE)
 - Descarga automática de binarios en auto-update
-- Firma de binarios (code signing)
+- Firma de binarios (code signing): **infraestructura lista** en `setup.iss`
+  (directivas `SignTool` / `SignedUninstaller` comentadas y procedimiento
+  documentado); falta adquirir el certificado EV/OV e integrarlo en el pipeline
 - HTTPS nativo usando los certificados generados
