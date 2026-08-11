@@ -6,6 +6,10 @@
 
 Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código).
 
+**Añadido después de la Fase 12:** reinicio con limpieza desde el System Tray
+—ítem "Reiniciar y Limpiar (Debug)", auto-relanzado del proceso y flag oculto
+`--flush-restart`— documentado en "Reinicio con Limpieza desde el System Tray".
+
 ## Arquitectura
 
 ### Decisiones Técnicas
@@ -21,6 +25,8 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Certificados SSL | `crypto/rsa` + `crypto/x509` (stdlib) | Generación nativa sin OpenSSL ni comandos externos |
 | Port Fallback | `net.Listen` + scan secuencial | Resiliencia ante conflictos de puerto |
 | Self-healing | `tasklist`/`pgrep` + `os.Process.Kill` | Eliminación de instancias huérfanas |
+| Self-relaunch | `os.Executable()` + `exec.Command(...).Start()` desligado | El agente se clona a sí mismo sin saber dónde está instalado; `Start()` no espera al hijo, así que el padre puede salir acto seguido |
+| Limpieza de arranque | Flag oculto `--flush-restart` + espera de 1,5 s | El socket del proceso anterior lo libera el sistema de forma asíncrona: bindear antes de tiempo caería al puerto 9101 |
 | Printers (Win) | `github.com/alexbrainman/printer` | Acceso al Windows Print Spooler via syscall |
 | Printers (Mac) | `lpstat -a` / `lp -d -o raw` (stdlib `os/exec`) | Descubrimiento e impresión CUPS nativa |
 | PDF Print (Win) | `ShellExecuteW` via `syscall` + `shell32.dll` | Impresión silenciosa de PDF usando el verbo "print" del sistema |
@@ -61,6 +67,9 @@ cronos-pos-agent/
 ├── certs.go             # GenerateCerts: RSA 2048 + X.509 autofirmado nativo
 ├── logger.go            # RotatingLogger: escritura a archivo con rotación 10MB/3 backups
 ├── updater.go           # CheckForUpdates: polling de versión contra servidor central
+├── selfheal.go          # Reinicio con limpieza: auto-relanzado y rutina de --flush-restart
+├── selfheal_windows.go  # Build tag: windows — clonado del proceso con CREATE_NO_WINDOW + DETACHED_PROCESS
+├── selfheal_darwin.go   # Build tag: darwin — clonado del proceso con Setsid (sesión propia)
 ├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
 ├── escpos.go            # Motor de codificación: ESC t n, encoder charmap y salto de gráficos
 ├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
@@ -185,6 +194,134 @@ Antes de arrancar el servidor HTTP, `killOrphanInstances()` ejecuta:
 
 Esto previene instancias zombie que bloqueen puertos o consuman RAM.
 
+## Reinicio con Limpieza desde el System Tray (`--flush-restart`)
+
+`killOrphanInstances()` limpia lo que dejó *otro* proceso. Este mecanismo limpia
+lo que ha dejado **el proceso en curso**: es la vía para que el operador —o
+soporte, por teléfono— fuerce un ciclo completo del agente sin abrir una consola,
+sin reinstalar y sin reiniciar la caja.
+
+### La nueva opción del menú
+
+`main.go` añade un ítem justo **encima de "Salir"**:
+
+```go
+mRestart := systray.AddMenuItem("Reiniciar y Limpiar (Debug)", "Limpia los archivos temporales y reinicia el agente por completo")
+mQuit    := systray.AddMenuItem("Salir", "Cerrar el agente")
+```
+
+El orden final del menú queda así:
+
+| Posición | Ítem | Qué hace |
+|---|---|---|
+| 1 | `Cronos Agent: Operativo (:9100)` | Estado, deshabilitado (sólo informativo) |
+| 2 | `Iniciar con el Sistema` | Checkbox de auto-arranque |
+| 3 | `Copiar Token de Seguridad` | Copia el `api_token` al portapapeles |
+| — | *(separador)* | |
+| 4 | **`Reiniciar y Limpiar (Debug)`** | Limpieza profunda + reinicio del agente |
+| 5 | `Salir` | Cierre limpio |
+
+La colocación no es cosmética: son los dos únicos ítems que terminan el proceso,
+y agruparlos debajo del separador los separa de las acciones cotidianas.
+
+### El ciclo completo
+
+| Paso | Proceso | Qué ocurre |
+|---|---|---|
+| 1 | Antiguo | El operador pulsa el ítem. El icono vuelve a **gris** y el estado pasa a "Reiniciando…": a partir de aquí el socket está condenado y un icono verde estaría mintiendo |
+| 2 | Antiguo | `RestartWithFlush()` obtiene su propia ruta con `os.Executable()` y lanza una copia de sí mismo con `--flush-restart --relaunched` |
+| 3 | Antiguo | `systray.Quit()` retira el icono de la bandeja y `onExit()` cierra el servidor HTTP de forma síncrona. Después, `os.Exit(0)` |
+| 4 | Nuevo | `main()` intercepta `--flush-restart` y ejecuta `RunFlushCleanup()` **antes** de `killOrphanInstances()`, de la reubicación y del systray |
+| 5 | Nuevo | Espera 1,5 s, borra temporales y logs rotados, y lo registra en stdout |
+| 6 | Nuevo | Sigue el arranque normal: resuelve el puerto, abre el socket y pone el icono **verde** |
+
+### Cómo Go clona su propio proceso
+
+`os.Executable()` devuelve la ruta del binario que se está ejecutando, así que el
+agente puede lanzarse a sí mismo sin saber dónde acabó instalado (Program Files,
+ProgramData o `%LOCALAPPDATA%`). Esa ruta se pasa a `startDetached()`, la
+envoltura de `exec.Command` definida por plataforma:
+
+| Plataforma | Archivo | Mecanismo | Por qué |
+|---|---|---|---|
+| Windows | `selfheal_windows.go` | `SysProcAttr{HideWindow, CreationFlags: CREATE_NO_WINDOW \| DETACHED_PROCESS}` | `CREATE_NO_WINDOW` evita el parpadeo de consola en la pantalla de la caja; `DETACHED_PROCESS` da al hijo su propio grupo de consola para que sobreviva al `os.Exit(0)` del padre, que llega milisegundos después |
+| macOS | `selfheal_darwin.go` | `SysProcAttr{Setsid: true}` | `setsid(2)` coloca al hijo en una sesión nueva sin terminal de control: el equivalente POSIX de `DETACHED_PROCESS` |
+
+**`Start()` y no `Run()`.** `cmd.Start()` vuelve en cuanto el sistema ha creado el
+proceso; `Run()` esperaría a que terminara, y aquí el hijo está pensado para
+durar horas. Es justo lo que permite al padre salir a continuación.
+
+**`--relaunched` viaja con el clon.** El proceso que se está reiniciando ya pasó
+por `EnsurePermanentLocation()`, así que el hijo no tiene nada que reubicar: sin
+ese flag, en un binario lanzado desde una carpeta volátil se copiaría y lanzaría
+un tercer proceso para nada.
+
+**Si el clon no arranca, el agente no se cierra.** `RestartWithFlush()` sólo
+devuelve error cuando no ha llegado a crear el proceso hijo; en ese caso el menú
+restaura el icono verde y el estado operativo. Una caja sin agente es peor que
+una caja que no se ha reiniciado.
+
+### La rutina de limpieza (`RunFlushCleanup`)
+
+Corre en `main()`, inmediatamente después de inicializar el logger y **antes** de
+que nada abra un socket o pinte un icono:
+
+```go
+if *flushRestart {
+    RunFlushCleanup()
+}
+
+killOrphanInstances()
+```
+
+Hace tres cosas:
+
+**1. Espera 1,5 s (`portReleaseGrace`).** Es el requisito del que depende todo lo
+demás. Cuando el hijo arranca, el padre **todavía está vivo** —sale unos
+milisegundos después— y el sistema operativo recupera el socket de escucha de
+forma asíncrona, una vez el proceso ha desaparecido del todo. Bindear antes de
+tiempo no es un fallo inocuo: `ResolvePort()` caería al 9101 y el frontend, que
+apunta al 9100, dejaría de encontrar al agente **justo después** del reinicio que
+debía arreglar las cosas. La espera va también antes de `killOrphanInstances()`,
+de modo que para cuando se ejecuta el barrido el predecesor ya se ha ido solo y
+no hay nada que matar.
+
+**2. Borra los archivos desechables.**
+
+| Qué | Dónde | Por qué puede haber quedado |
+|---|---|---|
+| `cronos-pdf-*.pdf` | `os.TempDir()` | `printPDF` (Windows y macOS) |
+| `cronos-ticket-*.bin` | `os.TempDir()` | `rawPrint` de macOS (`lp -o raw`) |
+| `cronos-app-icon.ico` | `os.TempDir()` | Icono extraído para la ventana de bienvenida (`LoadImageW`) |
+| `cronos-agent.log.1` … `.3` | `agentDir()` | Rotaciones antiguas del log |
+
+Cada uno de esos temporales lo borra normalmente el código que lo crea, así que
+un residuo significa que el agente murió a mitad de una impresión (un cierre
+forzado, un `killOrphanInstances`, un corte de corriente en la caja). El reinicio
+con limpieza es exactamente el momento de barrerlos.
+
+**El log activo no se toca.** El logger ya lo tiene abierto —Windows ni siquiera
+permitiría borrarlo— y es donde se está escribiendo el registro de esta misma
+limpieza. Sólo desaparecen las rotaciones archivadas, que es lo que hace que el
+siguiente log de soporte empiece limpio.
+
+Un archivo que no se pueda borrar (bloqueado por otro proceso) se registra en el
+log y la limpieza continúa: un temporal huérfano nunca puede impedir un reinicio.
+
+**3. Lo registra en stdout.**
+
+```
+[flush-restart] Limpieza iniciada — esperando 1.5s a que el sistema libere el puerto
+[flush-restart] Temporal de impresión eliminado: C:\Users\...\Temp\cronos-pdf-1873.pdf
+[flush-restart] Log rotado eliminado: C:\Users\...\CronosAgent\cronos-agent.log.1
+[flush-restart] Limpieza completada correctamente — 2 archivo(s) desechable(s) eliminado(s), puerto listo
+```
+
+`SetupLogger()` apunta `log` a un `io.MultiWriter(os.Stdout, rotatingLogger)`, así
+que estas líneas salen por la salida estándar —visible si soporte lanza el
+binario desde una consola— y quedan además en `cronos-agent.log` para
+diagnóstico posterior.
+
 ## Ubicación Permanente del Binario (Estilo QZ Tray)
 
 ### El problema en producción
@@ -294,7 +431,14 @@ ruta distinta de la del binario en ejecución (por ejemplo tras mover la app a
 | `--no-install` | No reubica el binario a la ruta permanente (uso en desarrollo) |
 | `--relaunched` | Uso interno: marca la instancia ya relanzada desde la ruta permanente |
 | `--first-run` | Arranca con normalidad y además abre la ventana de bienvenida. Lo usa el instalador al terminar la barra de progreso |
+| `--flush-restart` | **Oculto.** Uso interno: ejecuta la rutina de limpieza (espera de liberación de puerto + borrado de temporales y logs rotados) antes de levantar el servidor. Lo pasa el propio agente al clonarse desde "Reiniciar y Limpiar (Debug)" |
 | (sin flags) | Modo normal: self-healing, reubicación, reparación de autostart, systray + servidor HTTP |
+
+El flag `--flush-restart` no está pensado para el operador: no aparece en ningún
+acceso directo ni en el instalador, y el único que lo escribe es el agente
+cuando lanza su propia sustituta (ver "Reinicio con Limpieza desde el System
+Tray"). Documentarlo aquí es para soporte, que sí puede lanzarlo a mano para
+reproducir la limpieza sin tocar la bandeja.
 
 ### Generación de Certificados SSL
 
@@ -934,6 +1078,14 @@ func onExit() {
 | Goroutine del updater | Termina por el `select` sobre `agentDone` (antes era un `for range ticker.C` infinito) |
 | Goroutine del menú | Ídem: un `case <-agentDone: return` la saca del bucle |
 | Archivo de log | El `defer logCloser.Close()` de `main()`, que corre después de `systray.Run` |
+
+**"Reiniciar y Limpiar (Debug)" reutiliza este mismo camino.** Antes de su
+`os.Exit(0)` llama a `systray.Quit()` —que retira el icono— y a `onExit()`
+directamente, para cerrar el servidor de forma **síncrona** en vez de confiar en
+que el bucle de la bandeja llegue a hacerlo antes de que el proceso muera. Es
+seguro precisamente por el `sync.Once`: `onExit()` es idempotente, así que da
+igual que systray vuelva a invocarlo. Ver "Reinicio con Limpieza desde el System
+Tray".
 
 ### Detalles que importan
 

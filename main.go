@@ -44,6 +44,7 @@ func main() {
 	noInstall := flag.Bool("no-install", false, "No reubicar el binario a la ruta permanente (uso en desarrollo)")
 	relaunched := flag.Bool("relaunched", false, "Uso interno: el agente ya fue relanzado desde la ruta permanente")
 	firstRun := flag.Bool("first-run", false, "Muestra la ventana de bienvenida post-instalación (lo usa el instalador al terminar)")
+	flushRestart := flag.Bool(flushRestartFlagName, false, "Uso interno: limpieza profunda antes de arrancar, tras un reinicio pedido desde el System Tray")
 	flag.Parse()
 
 	if *generateCerts {
@@ -74,6 +75,16 @@ func main() {
 	defer logCloser.Close()
 
 	log.Printf("Cronos POS Agent v%s iniciando...", AgentVersion)
+
+	// This instance was spawned by "Reiniciar y Limpiar (Debug)": the cleanup
+	// runs here, before anything binds a socket or paints an icon, so that the
+	// port left by the previous process is free and no disposable file survives
+	// into the new session. It is also placed before killOrphanInstances()
+	// because its wait gives the predecessor the time it needs to die on its
+	// own, leaving nothing to kill.
+	if *flushRestart {
+		RunFlushCleanup()
+	}
 
 	killOrphanInstances()
 
@@ -141,6 +152,11 @@ func onReady() {
 
 	systray.AddSeparator()
 
+	// Placed right above "Salir" on purpose: both items end this process, and
+	// keeping them together separates the two destructive actions of the menu
+	// from the everyday ones.
+	mRestart := systray.AddMenuItem("Reiniciar y Limpiar (Debug)", "Limpia los archivos temporales y reinicia el agente por completo")
+
 	mQuit := systray.AddMenuItem("Salir", "Cerrar el agente")
 
 	srv := &http.Server{
@@ -199,6 +215,26 @@ func onReady() {
 				}
 			case <-mCopyToken.ClickedCh:
 				copyTokenToClipboard()
+			case <-mRestart.ClickedCh:
+				log.Println("Reinicio con limpieza solicitado desde el menú del System Tray")
+				// The tray goes back to its neutral state first: from this
+				// point on the agent is on its way out, and a green icon would
+				// be claiming a socket that is about to close.
+				systray.SetIcon(trayIconStarting())
+				systray.SetTooltip(fmt.Sprintf("Cronos POS Agent v%s — reiniciando…", AgentVersion))
+				mStatus.SetTitle("Cronos Agent: Reiniciando…")
+
+				// RestartWithFlush does not return when it succeeds: it ends
+				// this process once the successor is running. An error means no
+				// successor was spawned, so the agent must stay up —a till with
+				// no agent is worse than a till that did not restart— and the
+				// tray is restored to its operational state.
+				if err := RestartWithFlush(); err != nil {
+					log.Printf("Error reiniciando el agente: %v", err)
+					systray.SetIcon(trayIconReady())
+					systray.SetTooltip(fmt.Sprintf("Cronos POS Agent v%s — Operativo (:%d)", AgentVersion, port))
+					mStatus.SetTitle(fmt.Sprintf("Cronos Agent: Operativo (:%d)", port))
+				}
 			case <-mQuit.ClickedCh:
 				log.Println("Salida solicitada desde el menú del System Tray")
 				systray.Quit() // systray llama a onExit(), que cierra el servidor
