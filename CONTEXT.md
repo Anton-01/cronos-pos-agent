@@ -55,6 +55,10 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Logs | Rotación nativa con `RotatingLogger` | Sin dependencias externas, 10MB max, 3 backups |
 | Updates | Goroutine con polling cada 6h | Consulta JSON remoto |
 | Instalador | Inno Setup 6.3+ | Instalador silencioso estándar de Windows; pide admin para Program Files y cae a ProgramData si no lo hay |
+| Detección de reinstalación | Clave `Uninstall\{AppId}_is1` leída en `InitializeSetup()` | Es la clave que el propio Inno escribe al instalar: no hay que inventar un marcador propio que se pueda desincronizar |
+| Pantalla de reinstalación | `CreateCustomForm` (Pascal Scripting) | Un `MsgBox` no permite fijar el título de la ventana ni maquetar la lista de lo que se conserva |
+| Cierre del proceso activo | `taskkill /T` y, si sobrevive, `/F /T` desde `PrepareToInstall()` | Windows bloquea la sobrescritura de un `.exe` en uso; el primer intento deja que el agente ejecute su `onExit()` |
+| Log del instalador | `SetupLogging=yes` + copia en `{app}\install-log.txt` | Soporte pide siempre la misma ruta en vez de buscar un archivo con la fecha en el `%TEMP%` del operador |
 
 ### Estructura de Archivos
 
@@ -96,7 +100,7 @@ cronos-pos-agent/
 │   └── genassets/
 │       └── main.go      # Generador de los 3 iconos y de welcome_cat.png (dibujo por código)
 ├── installer/
-│   └── setup.iss        # Script Inno Setup para instalador silencioso Windows
+│   └── setup.iss        # Script Inno Setup: instalador silencioso + lógica de actualización/reinstalación
 ├── .gitignore
 ├── go.mod
 ├── go.sum

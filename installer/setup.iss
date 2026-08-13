@@ -36,7 +36,7 @@
 #define AutostartRunKey "Software\Microsoft\Windows\CurrentVersion\Run"
 
 [Setup]
-AppId={{B7E3F4A2-9C1D-4E5F-A8B6-7D2C3E4F5A6B}
+AppId={{#AppGuid}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
@@ -245,6 +245,17 @@ const
 // where the installer happened to be executed from.
 function PermanentInstallDir(Param: String): String;
 begin
+  // Actualización: se respeta la ruta de la instalación anterior. Mandarla a
+  // Program Files cuando vivía en ProgramData dejaría dos binarios y una
+  // entrada de auto-arranque apuntando al que ya no se actualiza.
+  if PreviousInstallFound then
+    if PreviousLocation <> '' then
+      if DirExists(PreviousLocation) then
+      begin
+        Result := PreviousLocation;
+        exit;
+      end;
+
   if IsAdminInstallMode then
     Result := ExpandConstant('{commonpf}\{#AppFolderName}')
   else
@@ -254,11 +265,19 @@ end;
 // Closes previous instances before upgrading: Windows does not allow
 // overwriting an executable that is in use.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  ResultCode: Integer;
 begin
-  Exec('taskkill', '/F /IM {#AppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := '';
+  if not StopRunningAgent then
+    Result :=
+      'No se ha podido cerrar Cronos POS Agent, que sigue en ejecución.' + #13#10 +
+      'Ciérralo desde el icono del gato en la bandeja del sistema (menú ' +
+      '"Salir") y vuelve a ejecutar el instalador.';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssDone then
+    CopyInstallLog;
 end;
 
 // IsProtectedDataFile reports the files that must outlive an uninstall.
