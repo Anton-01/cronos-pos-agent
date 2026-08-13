@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -30,6 +31,15 @@ const shutdownTimeout = 5 * time.Second
 // que systray ejecuta en otra goroutine. Es atómico porque quien lo escribe
 // (onReady) y quien lo lee (onExit) son goroutines distintas.
 var httpServer atomic.Pointer[http.Server]
+
+// httpListener holds the listening socket of port 9100 so that every exit path
+// can close it explicitly. srv.Shutdown() already closes the listeners it was
+// given, but the agent does not rely on that: "Salir" and the --flush-restart
+// clone both end the process right after, and if the socket were still open at
+// that moment the successor would find 9100 taken and fall back to 9101, while
+// the POS front-end keeps pointing at 9100. Atomic for the same reason as
+// httpServer: written by onReady, read by onExit.
+var httpListener atomic.Pointer[net.Listener]
 
 // agentDone se cierra en onExit para que las goroutines de larga vida (polling
 // de actualizaciones, bucle del menú) terminen en vez de quedar colgadas.
@@ -110,9 +120,18 @@ func main() {
 	// entre comillas dobles), salvo que el usuario la haya desactivado.
 	EnsureAutostartRegistered()
 
-	// La ventana de bienvenida corre en su propia goroutine con su propio bucle
-	// de mensajes: systray.Run() se queda con el hilo principal y no volvería
-	// hasta que el usuario cierre el agente.
+	// The welcome dialog runs in its own goroutine: MessageBoxW is modal and
+	// blocks until the operator dismisses it, while systray.Run() below takes
+	// over the main thread and does not return until the agent is closed.
+	//
+	// No balloon notification accompanies it. getlantern/systray v1.2.2 fills in
+	// a NOTIFYICONDATA internally but exposes no API to raise a balloon —there is
+	// no ShowNotification()— and the tray icon handle it would need is
+	// unexported. Emitting one would mean registering a second Shell_NotifyIconW
+	// icon of our own, which puts a duplicate cat in the notification area for as
+	// long as the toast lives. The MessageBoxW already states the agent is
+	// running in the background, and the tray tooltip reads "Operativo (:9100)"
+	// from the moment the socket accepts connections.
 	if *firstRun {
 		go ShowFirstRunWelcome()
 	}
@@ -173,6 +192,7 @@ func onReady() {
 		log.Fatalf("Error abriendo el puerto %s: %v", addr, err)
 	}
 	httpServer.Store(srv)
+	httpListener.Store(&listener)
 
 	go func() {
 		log.Printf("Servidor HTTP escuchando en http://%s", addr)
@@ -260,8 +280,35 @@ func onExit() {
 	exitOnce.Do(func() {
 		close(agentDone) // detiene el polling de actualizaciones y el bucle del menú
 		shutdownHTTPServer()
+		closeHTTPListener()
 		log.Println("Cronos Agent finalizado.")
 	})
+}
+
+// closeHTTPListener closes the listening socket explicitly, after the graceful
+// shutdown has already let the in-flight tickets finish.
+//
+// It runs on every exit path —"Salir", a SIGINT/SIGTERM, a Windows session
+// logoff and the "Reiniciar y Limpiar (Debug)" restart, which calls onExit()
+// itself right before os.Exit(0)— so port 9100 is never left held by a process
+// that is about to disappear. Closing twice is expected and harmless: Shutdown()
+// has normally closed this same listener a moment earlier and Close() then
+// reports "use of closed network connection", which is the confirmation being
+// looked for, not a failure. The Swap(nil) makes the call idempotent.
+func closeHTTPListener() {
+	l := httpListener.Swap(nil)
+	if l == nil {
+		return
+	}
+
+	if err := (*l).Close(); err != nil {
+		if errors.Is(err, net.ErrClosed) {
+			return // already closed by srv.Shutdown(): the port is free
+		}
+		log.Printf("No se pudo cerrar el socket de escucha: %v", err)
+		return
+	}
+	log.Println("Socket de escucha cerrado explícitamente")
 }
 
 // shutdownHTTPServer cierra ordenadamente el servidor HTTP y, con él, el socket

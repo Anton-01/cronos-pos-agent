@@ -45,17 +45,76 @@ func TestTranscodeCP1252(t *testing.T) {
 }
 
 // El caso exacto que fallaba en la caja de cobro: "Ánimo" salía impreso como
-// "†nimo". Con la configuración por defecto de la v1.5.0 el ticket debe abrir
-// con ESC t 16 (CP1252) y llevar la Á codificada como 0xC1.
-func TestBuildPayloadDefaultsToCP1252(t *testing.T) {
+// "†nimo". El ticket abre con ESC t 16 (CP1252) y la Á llega ya plegada a una
+// "A" ASCII, que es lo único que imprime igual en toda tabla de caracteres,
+// tenga o no el hardware en cuenta la selección de página.
+func TestBuildPayloadFoldsAccentsOfTheAnimoCase(t *testing.T) {
 	got, err := BuildESCPOSPayload([]byte("Ánimo"), EncodingOptions{Transcode: true})
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := []byte{0x1B, 0x74, 0x10, 0xC1, 'n', 'i', 'm', 'o'}
+	want := []byte{0x1B, 0x74, 0x10, 'A', 'n', 'i', 'm', 'o'}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// sanitizeTextForPrinter descompone a NFD y descarta las marcas (categoría Mn),
+// dejando la letra base. La eñe entra en el mismo saco: su virgulilla es una
+// marca combinante, así que "Niño" se imprime "Nino".
+func TestSanitizeTextForPrinter(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"Ánimo", "Animo"},
+		{"ARTÍCULO ÑOÑO", "ARTICULO NONO"},
+		{"Café con leche", "Cafe con leche"},
+		{"Niño", "Nino"},
+		{"ÁÉÍÓÚáéíóúÜü", "AEIOUaeiouUu"},
+		{"TOTAL: 25.00", "TOTAL: 25.00"}, // ASCII puro: intacto
+		{"", ""},
+		// Ya descompuesto en la entrada: "A" + U+0301. La base es ASCII y se
+		// copia antes; la marca llega suelta y también debe desaparecer.
+		{"Ánimo", "Animo"},
+		// Sin descomposición canónica y sin ser marcas: no son asunto de esta
+		// función, los resuelve después el codificador de la página de códigos.
+		{"¿Cuánto? 25 €", "¿Cuanto? 25 €"},
+	}
+
+	for _, tc := range cases {
+		if got := sanitizeTextForPrinter(tc.input); got != tc.want {
+			t.Errorf("sanitizeTextForPrinter(%q) = %q, se esperaba %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// La limpieza recorre el payload con el mismo lector conservador que el
+// transcodificador: un logo raster lleva bytes que por casualidad forman UTF-8
+// válido y normalizarlos corrompería la imagen.
+func TestSanitizePayloadTextSkipsRasterImageData(t *testing.T) {
+	// 0xC3 0x81 es "Á" en UTF-8, incrustado aquí dentro de los datos de imagen.
+	image := []byte{0xC3, 0x81, 0xC2, 0xB0, 0xFF, 0x00}
+	input := append([]byte{0x1D, 0x76, 0x30, 0x00, 0x02, 0x00, 0x03, 0x00}, image...)
+	input = append(input, []byte("Ánimo")...)
+
+	got := sanitizePayloadText(input)
+
+	want := append([]byte{0x1D, 0x76, 0x30, 0x00, 0x02, 0x00, 0x03, 0x00}, image...)
+	want = append(want, []byte("Animo")...)
+
+	if !bytes.Equal(got, want) {
+		t.Errorf("raster alterado:\n got % X\nwant % X", got, want)
+	}
+}
+
+// Los datos binarios sueltos (los que no forman UTF-8 válido) atraviesan la
+// limpieza byte a byte.
+func TestSanitizePayloadTextLeavesBinaryUntouched(t *testing.T) {
+	input := []byte{0x1B, 0x40, 0xFF, 0x81, 0xC0, 0xFE, 0xAA, 0x0A}
+	if got := sanitizePayloadText(input); !bytes.Equal(got, input) {
+		t.Errorf("los datos binarios se alteraron:\n got % X\nwant % X", got, input)
 	}
 }
 
@@ -64,7 +123,7 @@ func TestBuildPayloadDefaultsToCP1252(t *testing.T) {
 // del comando cambia pero la transcodificación sigue siendo la de CP1252.
 func TestBuildPayloadSelectorOverride(t *testing.T) {
 	selector := byte(0x13)
-	got, err := BuildESCPOSPayload([]byte("Á"), EncodingOptions{
+	got, err := BuildESCPOSPayload([]byte("¿Á?"), EncodingOptions{
 		CodePage:         "cp1252",
 		Transcode:        true,
 		SelectorOverride: &selector,
@@ -73,7 +132,9 @@ func TestBuildPayloadSelectorOverride(t *testing.T) {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := []byte{0x1B, 0x74, 0x13, 0xC1}
+	// La "Á" se pliega a "A" antes de codificar; la "¿" no lleva marca alguna,
+	// así que sigue el camino de siempre y viaja como 0xBF (CP1252).
+	want := []byte{0x1B, 0x74, 0x13, 0xBF, 'A', '?'}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -190,7 +251,7 @@ func TestBuildPayloadInsertsAfterInitialize(t *testing.T) {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 'C', 'a', 'f', 0x82}
+	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 'C', 'a', 'f', 'e'}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -209,16 +270,19 @@ func TestBuildPayloadRespectsExistingCodePageCommand(t *testing.T) {
 	}
 }
 
+// Con escpos_transcode desactivado no hay traducción a la página de códigos,
+// pero el pliegue de acentos sí se aplica: es la única capa que sigue en pie
+// cuando el hardware ignora la selección de página, así que no depende de esa
+// preferencia. La "¿", que no lleva marca, viaja en su UTF-8 original.
 func TestBuildPayloadWithoutTranscoding(t *testing.T) {
-	// Sólo se antepone el comando; el texto viaja tal cual lo mandó el emisor.
-	input := []byte("Á")
+	input := []byte("Á¿")
 
 	got, err := BuildESCPOSPayload(input, EncodingOptions{CodePage: "cp850", Transcode: false})
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := append([]byte{0x1B, 0x74, 0x02}, input...)
+	want := append([]byte{0x1B, 0x74, 0x02, 'A'}, []byte("¿")...)
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}

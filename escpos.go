@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Comandos ESC/POS relevantes para la codificación de caracteres.
@@ -142,11 +144,14 @@ func SupportedCodePageNames() []string {
 // BuildESCPOSPayload prepara los bytes definitivos que se escriben en la
 // impresora térmica:
 //
-//  1. Transcodifica el texto UTF-8 a los bytes de la página de códigos del
-//     hardware (Á É Í Ó Ú Ñ Ü ¿ ¡ …), que de otro modo se imprimirían como
-//     pares de caracteres basura porque la ticketera interpreta cada byte
-//     UTF-8 por separado.
-//  2. Antepone el comando "ESC t n" para activar esa misma página de códigos
+//  1. Strips the diacritics of the ticket text, so that "Ánimo" travels to the
+//     printer as "Animo" (see sanitizeTextForPrinter). This is the fallback for
+//     the hardware that ignores the code page selection of step 3.
+//  2. Transcodifica el texto UTF-8 a los bytes de la página de códigos del
+//     hardware (¿ ¡ € º …), que de otro modo se imprimirían como pares de
+//     caracteres basura porque la ticketera interpreta cada byte UTF-8 por
+//     separado.
+//  3. Antepone el comando "ESC t n" para activar esa misma página de códigos
 //     en la impresora, respetando un "ESC @" inicial si el payload lo trae.
 //
 // Si el payload ya contiene su propio "ESC t", se asume que el emisor gestiona
@@ -163,12 +168,69 @@ func BuildESCPOSPayload(data []byte, opts EncodingOptions) ([]byte, error) {
 		return data, nil
 	}
 
-	payload := data
+	// Diacritics go first, and they go regardless of opts.Transcode: an accent
+	// that has already been folded into its base letter is plain ASCII, and
+	// plain ASCII is the one thing every code page —selected or ignored— prints
+	// the same way. Whatever survives the fold (¿ ¡ € º) is still worth
+	// transcoding, so both layers stay.
+	payload := sanitizePayloadText(data)
 	if opts.Transcode {
 		payload = transcodeToCodePage(payload, cp.Charmap)
 	}
 
 	return insertCodePageCommand(payload, opts.Selector(cp)), nil
+}
+
+// sanitizeTextForPrinter removes the diacritical marks of a string and keeps the
+// base letter: "Ánimo" becomes "Animo", "ARTÍCULO ÑOÑO" becomes "ARTICULO NONO".
+//
+// What it solves. Selecting a code page with "ESC t n" is the correct fix on
+// paper, but part of the hardware in the field ignores that command outright and
+// keeps decoding every byte against whatever table its firmware booted with. On
+// those printers no encoding of "Á" is right —the byte lands on a different
+// glyph in every table— so the only text that prints reliably is text that has
+// no accented characters left in it. Folding the accent away loses a diacritic;
+// not folding it prints "†nimo".
+//
+// How it works. The string is first converted to NFD (Normalization Form
+// Canonical Decomposition), which splits every precomposed character into its
+// base letter plus its combining marks: "Á" (U+00C1) becomes "A" (U+0041)
+// followed by U+0301 COMBINING ACUTE ACCENT. The decomposed runes are then
+// walked one by one and every combining mark is discarded — those are the runes
+// in Unicode category Mn ("Mark, nonspacing"), tested with
+// unicode.Is(unicode.Mn, r). What is left is the bare base letter, already in
+// its composed form because a lone ASCII letter needs no recomposition.
+//
+// Note that the fold also reaches the tilde of "Ñ", which NFD decomposes exactly
+// like an accent ("N" + U+0303): "Niño" prints as "Nino". That is inherent to
+// the fallback — a printer that ignores the code page cannot render "Ñ" either.
+//
+// Characters with no canonical decomposition (¿ ¡ € ß ø …) are not marks and
+// pass through untouched; they are handled downstream by the code page encoder
+// and, failing that, by asciiFallback.
+func sanitizeTextForPrinter(input string) string {
+	decomposed := norm.NFD.String(input)
+
+	var out strings.Builder
+	out.Grow(len(decomposed))
+	for _, r := range decomposed {
+		if unicode.Is(unicode.Mn, r) {
+			continue // combining mark: the accent itself, dropped
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// sanitizePayloadText applies sanitizeTextForPrinter to every stretch of text in
+// a RAW ESC/POS payload, leaving commands and binary data alone. It walks the
+// payload with the same conservative reader the transcoder uses (mapTextRuns),
+// because a ticket is not a string: running the whole buffer through the
+// normalizer would corrupt the raster bytes of a logo.
+func sanitizePayloadText(data []byte) []byte {
+	return mapTextRuns(data, func(run []byte) []byte {
+		return []byte(sanitizeTextForPrinter(string(run)))
+	})
 }
 
 // codePagePreambleScan limita la búsqueda de un "ESC t" propio a la cabecera del
@@ -235,6 +297,20 @@ func transcodeToCodePage(data []byte, cm *charmap.Charmap) []byte {
 	// con estado interno y rawPrint puede ejecutarse en paralelo desde varias
 	// peticiones HTTP.
 	encoder := cm.NewEncoder()
+
+	return mapTextRuns(data, func(run []byte) []byte {
+		return encodeTextRun(encoder, cm, run)
+	})
+}
+
+// mapTextRuns walks a RAW ESC/POS payload, hands every stretch of real text to
+// transform and copies everything else —commands, ASCII, binary data— verbatim.
+// It is the shared reader behind the two transformations the agent applies to a
+// ticket: the diacritic fold (sanitizePayloadText) and the code page
+// transcoding (transcodeToCodePage). Both need exactly the same notion of
+// "which bytes of this buffer are text", and getting that wrong corrupts logos,
+// so the rule lives in one place.
+func mapTextRuns(data []byte, transform func(run []byte) []byte) []byte {
 	out := make([]byte, 0, len(data))
 
 	for i := 0; i < len(data); {
@@ -272,7 +348,7 @@ func transcodeToCodePage(data []byte, cm *charmap.Charmap) []byte {
 			i += size
 		}
 
-		out = append(out, encodeTextRun(encoder, cm, data[start:i])...)
+		out = append(out, transform(data[start:i])...)
 	}
 
 	return out

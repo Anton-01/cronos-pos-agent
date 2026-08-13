@@ -6,9 +6,22 @@
 
 Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código).
 
-**Añadido después de la Fase 12:** reinicio con limpieza desde el System Tray
-—ítem "Reiniciar y Limpiar (Debug)", auto-relanzado del proceso y flag oculto
-`--flush-restart`— documentado en "Reinicio con Limpieza desde el System Tray".
+**Añadido después de la Fase 12:**
+
+- Reinicio con limpieza desde el System Tray —ítem "Reiniciar y Limpiar
+  (Debug)", auto-relanzado del proceso y flag oculto `--flush-restart`—
+  documentado en "Reinicio con Limpieza desde el System Tray".
+- **Pliegue de diacríticos antes de imprimir** (`sanitizeTextForPrinter`): el
+  texto del ticket se normaliza a NFD y se le quitan las marcas combinantes, de
+  modo que `Ánimo` llega a la ticketera como `Animo`. Es el fallback para el
+  hardware que **ignora** la selección de página de códigos. Ver "Pliegue de
+  Diacríticos — el fallback de las impresoras genéricas".
+- **Ventana de bienvenida sustituida por `MessageBoxW`**: la ventana Win32 a
+  medida fallaba en silencio en las cajas, y ahora la confirmación
+  post-instalación es una llamada nativa a `user32.dll`. Ver "Ventana de
+  Bienvenida Post-Instalación".
+- **Cierre explícito del socket de escucha** (`closeHTTPListener`) en todas las
+  rutas de salida, antes del `os.Exit(0)`. Ver "Cierre Limpio del Agente".
 
 ## Arquitectura
 
@@ -46,11 +59,12 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Numeración de páginas | `escpos_code_page_id` en `config.json` | Válvula de escape para clones que numeran sus tablas fuera del estándar Epson, sin recompilar |
 | Tablas de códigos | `golang.org/x/text/encoding/charmap` | Implementación de referencia del proyecto Go: ~800 líneas de tablas propias sustituidas por cuatro alias que nadie tiene que revisar |
 | Transcodificación | `charmap.Windows1252.NewEncoder().Bytes()` por tramo de texto | Un ticket RAW no es una cadena: sólo se codifican los tramos de texto, no los comandos ni los logos |
+| Acentos (fallback) | NFD + descarte de la categoría `Mn` (`golang.org/x/text/unicode/norm` + `unicode`) | Parte del hardware ignora el `ESC t n`: una `A` sin tilde es el único byte que imprime igual en cualquier tabla |
 | Icono del agente | `//go:embed app_icon.ico` + `systray.SetIcon` | El binario se sobrescribe en cada actualización: un icono en archivo suelto se perdería |
 | Estado en la bandeja | Icono gris → verde tras `net.Listen` | El color confirma que el socket acepta conexiones, no que se haya lanzado una goroutine |
-| Cierre del agente | `srv.Shutdown(ctx)` en `onExit` + canal `agentDone` | Libera el puerto y no corta un ticket a medio enviar al spooler |
+| Cierre del agente | `srv.Shutdown(ctx)` + `listener.Close()` explícito en `onExit` + canal `agentDone` | Libera el puerto antes del `os.Exit(0)` y no corta un ticket a medio enviar al spooler |
 | Recursos Win32 | `rsrc_windows_amd64.syso` (icono + manifiesto) | Icono en Explorador/Alt+Tab y botones con estilo moderno (Common Controls 6) |
-| Ventana de bienvenida | Win32 nativo (`user32`/`gdi32` vía `syscall`) | Cero dependencias nuevas; `lxn/win` está sin mantenimiento y `fyne` exige CGO + OpenGL |
+| Ventana de bienvenida | `MessageBoxW` de `user32.dll` vía `syscall.NewLazyDLL` | La ventana Win32 a medida fallaba en silencio en producción; `MessageBoxW` es parte del sistema operativo: sin clase de ventana, sin bucle de mensajes, sin CGO |
 | Ilustraciones | Generadas por código (`tools/genassets`) | Recursos reproducibles y auditables en vez de binarios opacos |
 | Logs | Rotación nativa con `RotatingLogger` | Sin dependencias externas, 10MB max, 3 backups |
 | Updates | Goroutine con polling cada 6h | Consulta JSON remoto |
@@ -75,9 +89,9 @@ cronos-pos-agent/
 ├── selfheal_windows.go  # Build tag: windows — clonado del proceso con CREATE_NO_WINDOW + DETACHED_PROCESS
 ├── selfheal_darwin.go   # Build tag: darwin — clonado del proceso con Setsid (sesión propia)
 ├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
-├── escpos.go            # Motor de codificación: ESC t n, encoder charmap y salto de gráficos
+├── escpos.go            # Motor de codificación: pliegue de diacríticos (NFD), ESC t n, encoder charmap y salto de gráficos
 ├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
-├── escpos_test.go       # Tests del motor de codificación (17 casos)
+├── escpos_test.go       # Tests del motor de codificación (20 casos)
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
 ├── printer_windows.go   # Build tag: windows — spooler, RAW, cola, autostart, killOrphan
@@ -85,7 +99,7 @@ cronos-pos-agent/
 ├── assets_windows.go    # Build tag: windows — //go:embed del .ico y de la ilustración
 ├── assets_darwin.go     # Build tag: darwin — //go:embed del icono PNG de la barra de menús
 ├── firstrun.go          # Marcador de "bienvenida ya mostrada" y orquestación de --first-run
-├── firstrun_windows.go  # Build tag: windows — ventana de bienvenida nativa Win32
+├── firstrun_windows.go  # Build tag: windows — diálogo de bienvenida nativo (MessageBoxW)
 ├── firstrun_darwin.go   # Build tag: darwin — diálogo equivalente con osascript
 ├── app_icon.ico         # Icono del gato tuxedo, 7 resoluciones (16–256 px) — embebido
 ├── app_icon.png         # El mismo icono en PNG 64×64 (macOS / material de marca)
@@ -93,7 +107,7 @@ cronos-pos-agent/
 ├── app_icon_gray.png    # Ídem para la barra de menús de macOS
 ├── app_icon_green.ico   # Estado "operativo": gato con punto verde — embebido
 ├── app_icon_green.png   # Ídem para la barra de menús de macOS
-├── welcome_cat.png      # Ilustración 880×440: el gato jugando con la ticketera — embebida
+├── welcome_cat.png      # Ilustración 880×440: el gato jugando con la ticketera — ya NO embebida (material de marca)
 ├── app.manifest         # Manifiesto Win32: asInvoker + Common Controls 6.0
 ├── rsrc_windows_amd64.syso # Recurso Win32 generado (icono + manifiesto) que enlaza el .exe
 ├── tools/
@@ -296,7 +310,7 @@ no hay nada que matar.
 |---|---|---|
 | `cronos-pdf-*.pdf` | `os.TempDir()` | `printPDF` (Windows y macOS) |
 | `cronos-ticket-*.bin` | `os.TempDir()` | `rawPrint` de macOS (`lp -o raw`) |
-| `cronos-app-icon.ico` | `os.TempDir()` | Icono extraído para la ventana de bienvenida (`LoadImageW`) |
+| `cronos-app-icon.ico` | `os.TempDir()` | Residuo heredado: lo extraía la antigua ventana de bienvenida a medida (`LoadImageW`). Ya no se crea, pero la limpieza lo sigue barriendo |
 | `cronos-agent.log.1` … `.3` | `agentDir()` | Rotaciones antiguas del log |
 
 Cada uno de esos temporales lo borra normalmente el código que lo crea, así que
@@ -434,7 +448,7 @@ ruta distinta de la del binario en ejecución (por ejemplo tras mover la app a
 | `--disable-autostart` | Elimina el auto-arranque y guarda `"autostart": false` en `config.json`. Lo usa la opción "Iniciar con el Sistema" del System Tray. **El desinstalador ya no lo invoca** (ver "Desinstalación — política de preservación de estado") |
 | `--no-install` | No reubica el binario a la ruta permanente (uso en desarrollo) |
 | `--relaunched` | Uso interno: marca la instancia ya relanzada desde la ruta permanente |
-| `--first-run` | Arranca con normalidad y además abre la ventana de bienvenida. Lo usa el instalador al terminar la barra de progreso |
+| `--first-run` | Arranca con normalidad y además abre el diálogo de bienvenida (`MessageBoxW`). Lo usa el instalador al terminar la barra de progreso |
 | `--flush-restart` | **Oculto.** Uso interno: ejecuta la rutina de limpieza (espera de liberación de puerto + borrado de temporales y logs rotados) antes de levantar el servidor. Lo pasa el propio agente al clonarse desde "Reiniciar y Limpiar (Debug)" |
 | (sin flags) | Modo normal: self-healing, reubicación, reparación de autostart, systray + servidor HTTP |
 
@@ -489,7 +503,7 @@ ISCC.exe installer/setup.iss
 | 4 | Crea los accesos directos | Menú de Inicio (`{group}`) y Escritorio (`{autodesktop}`) — comunes a todos los usuarios en instalación elevada |
 | 5 | Genera certificados SSL | `--generate-certs` en modo oculto y con `runasoriginaluser` |
 | 6 | Registra el autostart | `HKCU\...\Run` → `CronosPOSAgent` con la ruta **entre comillas dobles** |
-| 7 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--first-run` y **sin** `runhidden`, para que se vea la ventana de bienvenida; en `/VERYSILENT`, sin el flag y con `runhidden` |
+| 7 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--first-run` y **sin** `runhidden`, para que se vea el diálogo de bienvenida; en `/VERYSILENT`, sin el flag y con `runhidden` |
 
 El instalador usa el mismo gato tuxedo como icono (`SetupIconFile=..\app_icon.ico`),
 y "Aplicaciones instaladas" lo muestra a través del recurso Win32 del propio
@@ -743,11 +757,17 @@ Peor aún: la página de fábrica de la práctica totalidad de las ticketeras es
 `Á`, `Í`, `Ó` y `Ú` no existen en esa tabla, así que no hay byte que enviar —
 sólo cambiar de página de códigos resuelve el caso.
 
-### La solución — dos mecanismos combinados
+### La solución — tres mecanismos encadenados
 
 Implementados en `escpos.go` y aplicados dentro de `rawPrint()` en
 `printer_windows.go` (y en `printer_darwin.go`), justo antes de escribir un solo
-byte en el spooler.
+byte en el spooler. `BuildESCPOSPayload()` los aplica en este orden:
+
+| # | Mecanismo | Qué hace |
+|---|---|---|
+| 1 | **Pliegue de diacríticos** (`sanitizeTextForPrinter`) | `Á` → `A`. Es el fallback: funciona incluso si la impresora ignora el paso 3 |
+| 2 | Transcodificación (`transcodeToCodePage`) | Lo que sobrevive al pliegue y no es ASCII (`¿ ¡ € º`) se lleva a los bytes de la página |
+| 3 | Selección de página (`ESC t n`) | Activa esa misma página en el hardware |
 
 **1. Selección de la página de códigos — `ESC t n`**
 
@@ -916,12 +936,15 @@ Global en `config.json` (`escpos_code_page`, `escpos_transcode`,
 
 ### Cobertura de tests
 
-`escpos_test.go` — 17 casos: bytes exactos de las mayúsculas acentuadas en CP850
-y CP1252, `Ánimo` completo con la configuración por defecto (`1B 74 10` + `C1`),
-override del selector, degradación a ASCII dentro de un tramo de texto y en
-CP437, integridad de los comandos ESC/POS, logo raster con UTF-8 incrustado que
-debe salir intacto, inserción después de `ESC @`, respeto a un `ESC t` propio del
-frontend y resolución de alias.
+`escpos_test.go` — 20 casos: bytes exactos de las mayúsculas acentuadas en CP850
+y CP1252 (a nivel de `transcodeToCodePage`, que sigue siendo la capa que traduce),
+`Ánimo` completo con la configuración por defecto (`1B 74 10` + `A n i m o`, ya
+plegado), pliegue de diacríticos carácter a carácter —incluida la entrada ya
+descompuesta `A`+U+0301 y la eñe—, integridad del logo raster y de los binarios
+frente al pliegue, override del selector, degradación a ASCII dentro de un tramo
+de texto y en CP437, integridad de los comandos ESC/POS, logo raster con UTF-8
+incrustado que debe salir intacto, inserción después de `ESC @`, respeto a un
+`ESC t` propio del frontend y resolución de alias.
 
 Los tests comprueban **bytes exactos**, así que también sirvieron de red al
 sustituir las tablas propias por `charmap`: si el codificador de `x/text`
@@ -930,6 +953,114 @@ colocara un solo carácter en otra posición, la suite fallaría.
 ```bash
 go test ./...   # ejecutar desde Windows o macOS (el paquete no compila en Linux)
 ```
+
+## Pliegue de Diacríticos — el fallback de las impresoras genéricas
+
+### Por qué hizo falta un tercer mecanismo
+
+Cambiar la página por defecto a CP1252 arregló las cajas cuyo hardware **hace
+caso** al `ESC t n`. En producción apareció el resto: ticketeras genéricas —clones
+sin marca, firmware recortado— que **ignoran el comando por completo** y siguen
+decodificando cada byte contra la tabla con la que arrancaron.
+
+En ese hardware no existe una codificación correcta de la `Á`:
+
+| Byte que envía el agente | Tabla realmente activa | Lo que sale impreso |
+|---|---|---|
+| `0xC1` (CP1252) | CP437 (fábrica) | `┴` |
+| `0xB5` (CP850) | CP1252 | `µ` |
+| `C3 81` (UTF-8 sin transcodificar) | cualquiera | dos símbolos |
+
+Elijas el byte que elijas, es el byte equivocado en alguna tabla. **El único
+carácter que se imprime igual en todas es el ASCII de 7 bits**, porque las cuatro
+páginas (y las del firmware de esos clones) comparten esa mitad de la tabla.
+
+De ahí la decisión: si el acento no puede viajar con garantías, se quita y se
+imprime la letra base. `Ánimo` sale como `Animo` — legible en cualquier
+ticketera— en lugar de `†nimo`.
+
+### Cómo funciona `sanitizeTextForPrinter`
+
+```go
+func sanitizeTextForPrinter(input string) string {
+    decomposed := norm.NFD.String(input)
+
+    var out strings.Builder
+    out.Grow(len(decomposed))
+    for _, r := range decomposed {
+        if unicode.Is(unicode.Mn, r) {
+            continue // marca combinante: el acento, se descarta
+        }
+        out.WriteRune(r)
+    }
+    return out.String()
+}
+```
+
+Dos pasos, cero dependencias nuevas (`golang.org/x/text` ya estaba en `go.mod`
+por `charmap`; `unicode` es de la biblioteca estándar):
+
+**1. Normalización NFD (Canonical Decomposition).** `norm.NFD` separa cada
+carácter precompuesto en su letra base más sus marcas:
+
+| Entrada | Runas tras NFD |
+|---|---|
+| `Á` (U+00C1) | `A` (U+0041) + U+0301 COMBINING ACUTE ACCENT |
+| `ñ` (U+00F1) | `n` (U+006E) + U+0303 COMBINING TILDE |
+| `ü` (U+00FC) | `u` (U+0075) + U+0308 COMBINING DIAERESIS |
+| `¿` (U+00BF) | `¿` — no tiene descomposición canónica |
+
+**2. Descarte de la categoría `Mn`.** Se recorren las runas y se tira toda la que
+sea una marca sin ancho (`unicode.Is(unicode.Mn, r)`, *Mark, nonspacing*): son
+justamente los acentos que NFD acaba de dejar sueltos. Lo que queda es la letra
+base, que ya está en su forma final —una letra ASCII suelta no necesita
+recomposición—.
+
+Se usa `Mn` y no `unicode.M`: `Mn` cubre los diacríticos combinantes, mientras
+que `Mc` y `Me` (marcas con ancho y envolventes) pertenecen a escrituras que no
+son asunto de un ticket en español.
+
+### Dónde se aplica
+
+En `BuildESCPOSPayload()`, **antes** de la transcodificación y de inyectar el
+`ESC t n`, es decir en el último punto antes de que los bytes salgan hacia el
+puerto de la impresora (`rawPrint`, tanto en Windows como en macOS).
+
+No se pasa el payload entero por el normalizador. Un ticket RAW **no es una
+cadena de texto**: mezcla texto con comandos y con datos binarios. La limpieza
+recorre el buffer con `mapTextRuns()`, el mismo lector conservador que ya usaba
+el transcodificador —comandos gráficos copiados en bloque, ASCII intacto, bytes
+no decodificables respetados—, y sólo entrega al normalizador los tramos que de
+verdad son texto. Ese lector se extrajo a una función compartida precisamente
+para que las dos transformaciones no puedan discrepar sobre qué bytes son texto.
+
+```go
+payload := sanitizePayloadText(data)      // Á -> A
+if opts.Transcode {
+    payload = transcodeToCodePage(payload, cp.Charmap)  // ¿ -> 0xBF
+}
+return insertCodePageCommand(payload, opts.Selector(cp)), nil
+```
+
+### Qué implica — y qué no se pierde
+
+- **La eñe también se pliega.** Su virgulilla es una marca combinante como
+  cualquier otra, así que `Niño` se imprime `Nino`. Es inherente al fallback: una
+  impresora que ignora la página de códigos tampoco sabe dibujar una `Ñ`. Es el
+  precio explícito de que el ticket sea legible en todo el parque.
+- **Los dos mecanismos anteriores siguen en pie**, y no son redundantes. Tras el
+  pliegue quedan caracteres sin descomposición canónica (`¿ ¡ € º ª`) que sí
+  necesitan la transcodificación y la página activa para imprimirse bien en el
+  hardware que sí respeta el `ESC t n`.
+- **El pliegue no depende de `escpos_transcode`.** Esa preferencia gobierna la
+  traducción a la página de códigos; el pliegue es la capa que tiene que
+  funcionar *sobre todo* cuando la página no se aplica, así que se ejecuta igual
+  con `"escpos_transcode": false`.
+- **`escpos_code_page: "none"` lo desactiva todo**, pliegue incluido. Sigue
+  siendo la válvula de escape para el integrador que quiere mandar sus bytes tal
+  cual: en ese modo el agente no toca el payload.
+- **`asciiFallback` no desaparece.** Se ocupa de lo que ni el pliegue ni la
+  página cubren (`—`→`-`, `€`→`EUR`, `…`→`...`) y, en último caso, de `?`.
 
 ## Identidad Visual — Icono del Gato Tuxedo
 
@@ -946,9 +1077,14 @@ Los recursos gráficos van **dentro** del ejecutable con `//go:embed`:
 //go:embed app_icon.ico
 var appIconICO []byte
 
-//go:embed welcome_cat.png
-var welcomeCatPNG []byte
+//go:embed app_icon_gray.ico
+var appIconGrayICO []byte
 ```
+
+`welcome_cat.png` **ya no se embebe**: el diálogo post-instalación es ahora un
+`MessageBoxW` nativo, que dibuja su propia ventana y no admite un bitmap propio.
+El archivo sigue en el repositorio como material de marca y `tools/genassets` lo
+sigue generando.
 
 No es una preferencia de estilo: el binario **se sobrescribe entero** en cada
 actualización y se copia solo a `C:\Program Files\CronosAgent` desde donde lo
@@ -1031,12 +1167,13 @@ El mismo `.syso` embebe `app.manifest`, que aporta dos cosas:
 - `requestedExecutionLevel asInvoker` — el agente nunca pide elevación: `HKCU` y
   `%LOCALAPPDATA%` deben ser los del operador de la caja, no los de un
   administrador.
-- Dependencia de **Common Controls 6.0** — sin ella el botón "Cerrar" de la
-  ventana de bienvenida se dibujaría con el estilo gris de Windows 95.
+- Dependencia de **Common Controls 6.0** — da a los diálogos del sistema, el de
+  bienvenida incluido, el estilo visual moderno en lugar del gris de Windows 95.
 
-No se declara compatibilidad con DPI a propósito: la ventana de bienvenida usa
-medidas fijas en píxeles, así que en una pantalla al 150 % es preferible que
-Windows escale la ventana entera a que la dibuje a dos tercios de su tamaño.
+No se declara compatibilidad con DPI a propósito. Con la bienvenida ya delegada
+en `MessageBoxW`, el sistema dibuja el cuadro con sus propias métricas; dejar
+que Windows escale es preferible a declarar una compatibilidad que el agente no
+gestiona en ninguna otra ventana, porque no tiene ninguna otra.
 
 ### Los recursos se dibujan por código
 
@@ -1069,7 +1206,8 @@ Ahí se libera todo:
 func onExit() {
     exitOnce.Do(func() {
         close(agentDone)      // detiene el polling de updates y el bucle del menú
-        shutdownHTTPServer()  // cierra el servidor y libera el puerto
+        shutdownHTTPServer()  // cierre ordenado: espera a las peticiones en curso
+        closeHTTPListener()   // cierre explícito del socket de escucha
         log.Println("Cronos Agent finalizado.")
     })
 }
@@ -1077,7 +1215,7 @@ func onExit() {
 
 | Recurso | Cómo se libera |
 |---|---|
-| Socket de escucha | `srv.Shutdown(ctx)`, que cierra el listener y, con él, el puerto |
+| Socket de escucha | `srv.Shutdown(ctx)` y, acto seguido, `listener.Close()` explícito |
 | Peticiones en curso | `Shutdown` espera a que terminen, con un tope de 5 s (`shutdownTimeout`); pasado ese plazo, `srv.Close()` |
 | Goroutine del updater | Termina por el `select` sobre `agentDone` (antes era un `for range ticker.C` infinito) |
 | Goroutine del menú | Ídem: un `case <-agentDone: return` la saca del bucle |
@@ -1090,6 +1228,31 @@ que el bucle de la bandeja llegue a hacerlo antes de que el proceso muera. Es
 seguro precisamente por el `sync.Once`: `onExit()` es idempotente, así que da
 igual que systray vuelva a invocarlo. Ver "Reinicio con Limpieza desde el System
 Tray".
+
+### Cierre explícito del socket (`closeHTTPListener`)
+
+`srv.Shutdown(ctx)` ya cierra los listeners que se le entregaron, pero el agente
+**no se apoya en ese efecto secundario**: `main.go` guarda el listener en un
+`atomic.Pointer[net.Listener]` al abrirlo y lo cierra a mano en `onExit()`, justo
+después del cierre ordenado.
+
+El motivo es el orden de los acontecimientos en las dos rutas que terminan el
+proceso de inmediato:
+
+| Ruta | Qué pasa después del cierre |
+|---|---|
+| **"Salir"** del System Tray (y `SIGINT`/`SIGTERM`, y el cierre de sesión) | `systray.Quit()` → `onExit()` → el proceso termina con código 0 |
+| **`--flush-restart`** | `RestartWithFlush()` llama a `systray.Quit()` y a `onExit()` y ejecuta `os.Exit(0)` con el sucesor ya lanzado y esperando el puerto |
+
+En ambos casos el puerto **tiene que estar libre antes de la salida**. Si el
+socket siguiera abierto, el siguiente agente caería al 9101 por el fallback de
+`ResolvePort()` y el frontend, que apunta al 9100, dejaría de encontrarlo — justo
+después del reinicio que debía arreglar las cosas.
+
+Cerrar dos veces es lo esperado y es inocuo: `Shutdown()` normalmente ya cerró
+ese mismo listener y el `Close()` devuelve entonces `net.ErrClosed`, que se
+interpreta como la confirmación buscada y no como un fallo. El `Swap(nil)` hace
+la función idempotente, igual que en `shutdownHTTPServer()`.
 
 ### Detalles que importan
 
@@ -1106,7 +1269,7 @@ Tray".
   lo cierra (`onExit`) son goroutines distintas. El `Swap(nil)` además garantiza
   que sólo se cierre una vez.
 
-## Ventana de Bienvenida Post-Instalación (`--first-run`)
+## Diálogo de Bienvenida Post-Instalación (`--first-run`)
 
 ### El problema
 
@@ -1120,78 +1283,127 @@ si había funcionado, y la duda acababa en una llamada a soporte.
 1. El instalador lanza el agente con `--first-run` al terminar la barra de
    progreso (`[Run]` de `setup.iss`).
 2. El agente arranca con normalidad —self-healing, reubicación, auto-arranque,
-   bandeja y servidor HTTP— y **además** abre la ventana de bienvenida.
-3. El operador la cierra con el botón "Cerrar" (o con la X de la barra de
-   título) y el agente sigue funcionando en la bandeja.
+   bandeja y servidor HTTP— y **además** abre el diálogo de bienvenida.
+3. El operador pulsa "Aceptar" y el agente sigue funcionando en la bandeja.
 
-### Por qué la ventana la abre el propio agente
+### Por qué el diálogo lo abre el propio agente
 
-Podría lanzarse un segundo proceso sólo para la ventana, pero
+Podría lanzarse un segundo proceso sólo para el diálogo, pero
 `killOrphanInstances()` mata al arrancar cualquier otra instancia de
 `cronos-pos-agent.exe` que no sea la actual (ver "Self-Healing"). Ese segundo
 proceso moriría en cuanto el agente hiciera su limpieza —o al revés, según quién
-ganara la carrera—. Abriéndola desde el mismo proceso no hay carrera posible.
+ganara la carrera—. Abriéndolo desde el mismo proceso no hay carrera posible.
 
-La ventana corre en su propia goroutine con `runtime.LockOSThread()`, porque el
-bucle de mensajes de Win32 es por hilo y `systray.Run()` se queda con el
-principal hasta que el usuario cierra el agente.
+Corre en su propia goroutine porque `MessageBoxW` es **modal**: bloquea hasta
+que el operador lo cierra, y `systray.Run()` necesita el hilo principal hasta que
+el agente termine.
 
 Si el binario tiene que reubicarse a la ruta permanente, el flag viaja con el
-relanzado (`EnsurePermanentLocation("--first-run")`): la ventana debe abrirla la
+relanzado (`EnsurePermanentLocation("--first-run")`): el diálogo debe abrirlo la
 instancia definitiva, no la temporal que está a punto de terminar.
 
-### Contenido de la ventana
+### De ventana Win32 a medida a `MessageBoxW`
+
+Hasta esta versión el agente pintaba una ventana propia: clase registrada a
+mano, bucle de mensajes propio, la ilustración del gato volcada con
+`StretchDIBits` y un botón "Cerrar" dibujado con `CreateWindowEx`. **En
+producción no aparecía.** Y no aparecía en silencio: el agente es un binario
+`-H=windowsgui`, sin consola donde protestar, así que una instalación atendida
+terminaba exactamente igual que si el flag no existiera — que es el problema que
+la pantalla venía a resolver.
+
+La sustitución es una única llamada al sistema operativo, el mismo mecanismo que
+`printer_windows.go` ya usaba para `ShellExecuteW`:
+
+```go
+var (
+    user32          = syscall.NewLazyDLL("user32.dll")
+    procMessageBoxW = user32.NewProc("MessageBoxW")
+)
+
+ret, _, callErr := procMessageBoxW.Call(
+    0,                                  // hWnd: sin ventana propietaria
+    uintptr(unsafe.Pointer(text)),      // UTF-16
+    uintptr(unsafe.Pointer(title)),     // UTF-16
+    uintptr(mbOK|mbIconInformation|mbSetForeground|mbTopMost),
+)
+if ret == 0 {
+    return fmt.Errorf("MessageBoxW falló: %v", callErr)
+}
+```
+
+**Qué gana el cambio.** `MessageBoxW` forma parte de Windows: siempre está,
+dibuja su propia ventana, corre su propio bucle de mensajes modal y no necesita
+clase de ventana, contexto de dispositivo, imagen decodificada ni CGO. No queda
+nada en ese camino que pueda romperse sin avisar — o el cuadro está en pantalla,
+o la llamada devuelve `0` y el motivo se escribe en el log.
+
+**Cómo se invoca.** `syscall.NewLazyDLL` resuelve `user32.dll` de forma
+perezosa: la DLL sólo se carga la primera vez que se llama al procedimiento, que
+en un arranque normal (sin `--first-run`) es nunca. Los dos textos se convierten
+a UTF-16 con `syscall.UTF16PtrFromString` —la "W" de `MessageBoxW`— y por eso los
+acentos y la "¡" del mensaje llegan intactos a la pantalla. El `hWnd` va a 0: el
+agente no tiene ventana principal, y un propietario nulo convierte el cuadro en
+un diálogo de primer nivel independiente.
+
+**Las banderas.**
+
+| Bandera | Valor | Para qué |
+|---|---|---|
+| `MB_OK` | `0x00000000` | Un solo botón "Aceptar": esto informa de un éxito, no pregunta nada |
+| `MB_ICONINFORMATION` | `0x00000040` | El icono azul de información |
+| `MB_SETFOREGROUND` | `0x00010000` | Lo pone por delante de la ventana del instalador que se está cerrando detrás |
+| `MB_TOPMOST` | `0x00040000` | Evita que lo tape el frontend del POS, que en una caja suele ir a pantalla completa |
+
+**Lo que se pierde.** Un `MessageBox` no admite bitmap propio, así que la
+ilustración del gato desaparece de la pantalla de bienvenida (`welcome_cat.png`
+deja de embeberse). Es el precio de "cero dependencias y ningún fallo
+silencioso": el gato tuxedo sigue siendo el icono que el propio mensaje le dice
+al operador que busque en la bandeja.
+
+### Contenido del diálogo
 
 | Elemento | Detalle |
 |---|---|
-| Ilustración | `welcome_cat.png` (880×440, embebida): el gato tuxedo jugando con la ticketera y su ticket |
-| Mensaje | **"¡Cronos POS se ha instalado correctamente!"** |
-| Texto secundario | Explica que el agente ya está en la bandeja y que arrancará solo con el equipo |
-| Botón | "✕ Cerrar", con el aspa clásica; la ventana conserva además la X de la barra de título |
-| Icono de la ventana | El gato tuxedo (`app_icon.ico`, cargado con `LoadImageW`) |
-| Tamaño | Área cliente de 468×384 px, centrada en la pantalla |
+| Título | **"Instalación Exitosa - Cronos POS"** |
+| Mensaje | "El Agente de Impresión Cronos POS se ha instalado correctamente.\n\nEl sistema se está ejecutando silenciosamente en segundo plano. Puedes gestionarlo desde el icono del gatito en la barra de tareas (junto al reloj)." |
+| Icono | Información (`MB_ICONINFORMATION`) |
+| Botones | Uno: "Aceptar" (`MB_OK`) |
 
-### Por qué Win32 nativo y no una librería
+### Notificación de globo — por qué no la hay
 
-`firstrun_windows.go` habla directamente con `user32.dll` y `gdi32.dll` vía
-`syscall`, igual que ya hacía `printer_windows.go` con `ShellExecuteW`:
+El requisito era lanzar además un globo ("Cronos POS Operativo") **si la librería
+de System Tray lo soporta**. `github.com/getlantern/systray` v1.2.2 **no lo
+soporta**: rellena internamente una `NOTIFYICONDATA` (incluido el campo
+`BalloonIcon`), pero no expone ninguna API para emitirlo —no hay
+`ShowNotification()`— y el handle del icono que haría falta es no exportado.
 
-| Alternativa | Por qué se descartó |
-|---|---|
-| `github.com/lxn/win` | Sin mantenimiento desde 2021. Obliga a escribir exactamente el mismo código (registrar la clase, bucle de mensajes, pintar el bitmap) con otra fachada |
-| `fyne` | Requiere CGO y OpenGL, y añade decenas de MB al binario para una ventana que se abre una vez en la vida del equipo |
-| `MessageBox` nativa | No admite imagen propia, y el requisito es mostrar la ilustración |
-
-Resultado: la ventana no añadió **ninguna dependencia** a `go.mod` y el
-ejecutable sigue siendo un único archivo autónomo.
-
-Detalle de implementación: `StretchDIBits` ignora el canal alfa de un DIB
-`BI_RGB`, así que la transparencia del PNG se compone contra el blanco de la
-ventana al decodificarlo; de lo contrario los bordes suavizados de la
-ilustración saldrían con un halo gris. La imagen se guarda al doble del tamaño
-con el que se dibuja y se reduce con `HALFTONE`, para que se vea nítida cuando
-Windows escala la ventana en pantallas HiDPI.
+Emitir uno por nuestra cuenta obligaría a registrar un segundo icono con
+`Shell_NotifyIconW`, lo que deja **dos gatos** en el área de notificación
+mientras el globo vive. No compensa: el `MessageBoxW` ya dice que el agente está
+corriendo en segundo plano, y el tooltip de la bandeja pasa a "Operativo (:9100)"
+en cuanto el socket acepta conexiones.
 
 ### Una sola vez
 
 El agente escribe un marcador `welcome-shown` en su directorio de datos
 (`%LOCALAPPDATA%\CronosAgent\`) con la versión que ya se mostró:
 
-- Relanzar el binario con `--first-run` no repite la ventana.
+- Relanzar el binario con `--first-run` no repite el diálogo.
 - Actualizar a una versión nueva sí vuelve a confirmarle al operador que la
   actualización ha ido bien.
-- El marcador se escribe **antes** de abrir la ventana: si el subsistema
-  gráfico fallara, el agente no debe quedarse intentándolo en cada arranque.
+- El marcador se escribe **antes** de abrir el diálogo: si la llamada al sistema
+  fallara, el agente no debe quedarse intentándolo en cada arranque.
 - El desinstalador lo borra, para que una reinstalación vuelva a saludar.
 
-En despliegues silenciosos (`/VERYSILENT`) la ventana **no** se abre: el
+En despliegues silenciosos (`/VERYSILENT`) el diálogo **no** se abre: el
 instalador usa `Check: not WizardSilent` y lanza el agente sin el flag. No hay
-nadie delante de esas pantallas que la cierre.
+nadie delante de esas pantallas que lo cierre — y un cuadro modal sin nadie que
+pulse "Aceptar" dejaría la instalación aparentemente colgada.
 
 En macOS `showWelcomeWindow()` muestra el diálogo equivalente con `osascript`.
-No se replica la ventana con ilustración porque el problema que la motiva es de
-Windows: en macOS la app se instala arrastrándola a `/Applications` y el propio
-Finder da esa confirmación.
+El problema que lo motiva es de Windows: en macOS la app se instala
+arrastrándola a `/Applications` y el propio Finder da esa confirmación.
 
 ## Seguridad — Token Local
 
@@ -1230,10 +1442,14 @@ El `printer_data` del ejemplo es `ESC @` + `"ARTÍCULO ÑOÑO\n"` en UTF-8 + cor
 
 ```
 Recibido:  1B 40             41 52 54 C3 8D 43 55 4C 4F 20 C3 91 4F C3 91 4F 0A  1D 56 00
-Enviado:   1B 40  1B 74 10   41 52 54 CD    43 55 4C 4F 20 D1    4F D1    4F 0A  1D 56 00
+Enviado:   1B 40  1B 74 10   41 52 54 49    43 55 4C 4F 20 4E    4F 4E    4F 0A  1D 56 00
                   ^^^^^^^^            ^^                ^^       ^^
-                  ESC t 16 tras ESC @ Í en CP1252       Ñ en CP1252
+                  ESC t 16 tras ESC @ Í -> I             Ñ -> N
 ```
+
+Es decir, "ARTÍCULO ÑOÑO" se imprime "ARTICULO NONO": el pliegue de diacríticos
+actúa antes de la transcodificación, así que esas letras ya viajan en ASCII y no
+dependen de que el hardware respete el `ESC t 16`. Ver "Pliegue de Diacríticos".
 
 | Campo | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
@@ -1250,16 +1466,20 @@ Enviado:   1B 40  1B 74 10   41 52 54 CD    43 55 4C 4F 20 D1    4F D1    4F 0A 
 | `github.com/alexbrainman/printer` | v0.0.0-20200912 | Windows Print Spooler |
 | `github.com/atotto/clipboard` | v0.1.4 | Copiar el token de seguridad al portapapeles del SO (multiplataforma) |
 | `golang.org/x/sys` | v0.1.0+ | Registro de Windows |
-| `golang.org/x/text` | v0.23.0 | `encoding/charmap`: codificación UTF-8 → CP1252/CP850/CP858/CP437 |
+| `golang.org/x/text` | v0.23.0 | `encoding/charmap`: codificación UTF-8 → CP1252/CP850/CP858/CP437. `unicode/norm`: normalización NFD para el pliegue de diacríticos |
 
 `golang.org/x/text` es la única dependencia añadida en la Fase 11, y **resta
 código en vez de sumarlo**: sustituye las ~800 líneas de tablas de códigos que
 se mantenían en este repositorio. Se fija en la v0.23.0 porque las versiones
 posteriores exigen Go ≥ 1.25 y el proyecto compila con la 1.24.
 
+El pliegue de diacríticos **no añadió ninguna dependencia**: `unicode/norm` es
+otro paquete del módulo `golang.org/x/text` que ya estaba, y la categoría `Mn`
+sale del paquete `unicode` de la biblioteca estándar.
+
 Todo lo demás sigue siendo stdlib: el icono se embebe con `//go:embed`, las
-ilustraciones se generan con `image`/`image/png` y la ventana de bienvenida
-habla directamente con `user32`/`gdi32` vía `syscall`.
+ilustraciones se generan con `image`/`image/png` y el diálogo de bienvenida es
+una llamada directa a `user32.dll` (`MessageBoxW`) vía `syscall`.
 
 `github.com/akavel/rsrc` se usa como herramienta puntual (`go run …@v0.10.2`)
 para regenerar `rsrc_windows_amd64.syso`; no aparece en `go.mod` ni se enlaza.
