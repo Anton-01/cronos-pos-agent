@@ -32,7 +32,7 @@ const portReleaseGrace = 1500 * time.Millisecond
 var tempPrintArtifacts = []string{
 	"cronos-pdf-*.pdf",    // printPDF: the PDF handed to ShellExecuteW / lp
 	"cronos-ticket-*.bin", // rawPrint on macOS: the ESC/POS payload sent to lp -o raw
-	"cronos-app-icon.ico", // welcome window: icon extracted for LoadImageW
+	"cronos-app-icon.ico", // legacy: icon extracted by the old custom welcome window
 }
 
 // RestartWithFlush clones the running agent into a brand new process and ends
@@ -74,7 +74,9 @@ func RestartWithFlush() error {
 	// never sees two cats at once, and onExit() —idempotent thanks to its
 	// sync.Once— shuts the HTTP server down *synchronously* here instead of
 	// trusting the tray loop to get there before os.Exit() kills everything.
-	// Closing the server frees the port before the child stops waiting.
+	// onExit() also closes the listening socket explicitly (closeHTTPListener),
+	// so port 9100 is released before os.Exit(0) and not left to the kernel to
+	// reclaim after the fact: the child is waiting precisely for that port.
 	log.Println("[flush-restart] Nueva instancia lanzada, esta instancia se cierra")
 	systray.Quit()
 	onExit()

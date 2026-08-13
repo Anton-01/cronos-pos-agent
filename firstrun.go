@@ -7,19 +7,24 @@ import (
 	"strings"
 )
 
-// Ventana de bienvenida post-instalación.
+// Post-installation welcome dialog.
 //
-// El instalador lanza el agente con --first-run al terminar la barra de
-// progreso. El agente arranca con normalidad (bandeja + servidor HTTP) y además
-// abre una ventana ligera que confirma al operador que la instalación ha ido
-// bien. Sin ella la instalación termina sin ninguna señal visible: el agente es
-// un binario -H=windowsgui que sólo deja un icono de 16 px en la bandeja, y el
-// operador de la caja no tiene forma de saber si funcionó.
+// The installer launches the agent with --first-run once the progress bar is
+// done. The agent starts as usual (tray + HTTP server) and, on top of that,
+// confirms to the operator that the installation went through. Without that
+// confirmation the installation ends with no visible sign at all: the agent is
+// a -H=windowsgui binary whose only trace is a 16 px icon in the tray, and the
+// person standing at the till has no way of telling whether it worked.
 //
-// La ventana se abre desde el propio proceso del agente y no desde un segundo
-// ejecutable: killOrphanInstances() mata cualquier otra instancia de
-// cronos-pos-agent.exe al arrancar, así que un proceso aparte sólo para la
-// ventana moriría en cuanto el agente hiciera su self-healing.
+// The dialog is opened by the agent's own process and not by a second
+// executable: killOrphanInstances() kills every other cronos-pos-agent.exe on
+// startup, so a separate process just for the dialog would die as soon as the
+// agent ran its self-healing.
+//
+// The platform files provide showWelcomeWindow(): a native MessageBoxW on
+// Windows (firstrun_windows.go) and an osascript dialog on macOS
+// (firstrun_darwin.go). Neither adds a dependency, and neither can fail
+// silently — both report an error that this file writes to the log.
 
 // welcomeMarkerName es el archivo del directorio de datos que recuerda que la
 // bienvenida ya se mostró. Guarda la versión del agente, de modo que una
