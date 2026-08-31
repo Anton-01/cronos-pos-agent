@@ -29,10 +29,10 @@ func discoverPrinters() ([]PrinterInfo, error) {
 	return printers, nil
 }
 
-// rawPrint envía un ticket ESC/POS a CUPS. Igual que en Windows, el payload se
-// prepara antes con BuildESCPOSPayload para seleccionar la página de códigos del
-// hardware y transcodificar el texto UTF-8 a sus bytes, de modo que las vocales
-// acentuadas mayúsculas (Á É Í Ó Ú Ñ) se impriman correctamente.
+// rawPrint sends an ESC/POS ticket to CUPS. As on Windows, BuildESCPOSPayload
+// prepares the payload first: it resets the printer ("ESC @"), selects the
+// hardware code page ("ESC t n") and transcodes the UTF-8 text to the bytes of
+// that page, so that the accented capitals (Á É Í Ó Ú Ñ) print correctly.
 func rawPrint(printerName string, data []byte, enc EncodingOptions) error {
 	payload, err := BuildESCPOSPayload(data, enc)
 	if err != nil {

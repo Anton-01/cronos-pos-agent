@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-const AgentVersion = "1.6.0"
+const AgentVersion = "1.7.0"
 
 // configFileName es el nombre del archivo de configuración dentro de agentDir().
 const configFileName = "config.json"
@@ -40,6 +40,17 @@ type Config struct {
 	// ESCPOSTranscode activa la conversión de texto UTF-8 a los bytes de esa
 	// página de códigos. Puntero para distinguir "false" de "no configurado".
 	ESCPOSTranscode *bool `json:"escpos_transcode"`
+	// ESCPOSStripAccents folds the diacritics of the ticket text before it is
+	// encoded, so that "Ánimo" is printed as "Animo". It is the fallback for
+	// the hardware that ignores the "ESC t n" selection: set it to false on a
+	// printer that honours the code page and the real accents are printed.
+	// Pointer to tell "false" apart from "not configured"; default true.
+	ESCPOSStripAccents *bool `json:"strip_accents"`
+	// ESCPOSInitialize prepends "ESC @" (0x1B 0x40) to every RAW job, so that
+	// the printer starts from a known state and no leftover setting from the
+	// previous ticket survives into this one. Pointer for the same reason;
+	// default true.
+	ESCPOSInitialize *bool `json:"escpos_initialize"`
 	// ESCPOSCodePageID sustituye el "n" del comando "ESC t n" por un valor
 	// concreto (0–255), manteniendo la tabla de transcodificación de
 	// ESCPOSCodePage. Sólo hace falta en ticketeras clónicas que numeran sus
@@ -70,6 +81,13 @@ var (
 
 func boolPtr(v bool) *bool { return &v }
 
+// LoadConfig reads config.json once and fills in every key the file does not
+// carry yet, writing the result back to disk. A missing file is not an error:
+// the read fails, every default applies and the agent creates the file on its
+// first start with the values above (see the defaults for port, code page,
+// transcoding, accent folding and printer reset). New keys added by a later
+// version of the agent land in an existing config.json the same way, without
+// touching the api_token already handed to the frontend.
 func LoadConfig() (Config, error) {
 	configOnce.Do(func() {
 		configPath := configFilePath()
@@ -115,6 +133,16 @@ func LoadConfig() (Config, error) {
 
 		if appConfig.ESCPOSTranscode == nil {
 			appConfig.ESCPOSTranscode = boolPtr(true)
+			needsWrite = true
+		}
+
+		if appConfig.ESCPOSStripAccents == nil {
+			appConfig.ESCPOSStripAccents = boolPtr(true)
+			needsWrite = true
+		}
+
+		if appConfig.ESCPOSInitialize == nil {
+			appConfig.ESCPOSInitialize = boolPtr(true)
 			needsWrite = true
 		}
 
@@ -187,7 +215,7 @@ func AutostartPreferred() bool {
 // EncodingOptionsFor combina la configuración global de codificación ESC/POS
 // con los overrides opcionales que traiga la petición de impresión.
 func EncodingOptionsFor(reqCodePage string, reqTranscode *bool) EncodingOptions {
-	opts := EncodingOptions{CodePage: defaultCodePage, Transcode: true}
+	opts := DefaultEncodingOptions()
 
 	if cfg, err := LoadConfig(); err == nil {
 		if cfg.ESCPOSCodePage != "" {
@@ -201,6 +229,12 @@ func EncodingOptionsFor(reqCodePage string, reqTranscode *bool) EncodingOptions 
 		}
 		if cfg.ESCPOSTranscode != nil {
 			opts.Transcode = *cfg.ESCPOSTranscode
+		}
+		if cfg.ESCPOSStripAccents != nil {
+			opts.StripAccents = *cfg.ESCPOSStripAccents
+		}
+		if cfg.ESCPOSInitialize != nil {
+			opts.Initialize = *cfg.ESCPOSInitialize
 		}
 		if cfg.ESCPOSCodePageID != nil {
 			id := *cfg.ESCPOSCodePageID

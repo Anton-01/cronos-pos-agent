@@ -22,6 +22,15 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
   Bienvenida Post-Instalación".
 - **Cierre explícito del socket de escucha** (`closeHTTPListener`) en todas las
   rutas de salida, antes del `os.Exit(0)`. Ver "Cierre Limpio del Agente".
+- **Preámbulo ESC/POS completo en todo ticket** (v1.7.0): el agente ya no se
+  limita a inyectar `ESC t n`, sino que abre el flujo con `ESC @` (`1B 40`,
+  reinicio de la impresora) seguido de la selección de página. Un payload que
+  ya trae su propio `ESC @` conserva el suyo y no se duplica el reinicio. Ver
+  "Preámbulo de todo ticket — `ESC @` + `ESC t n`".
+- **Pliegue de acentos conmutable** (`strip_accents` en `config.json`, default
+  `true`): en una ticketera que sí respeta el `ESC t n` se pone en `false` y los
+  acentos, la `ñ` y la `Ñ` se imprimen de verdad, transcodificados por
+  `charmap`. Ver "Pliegue de Diacríticos".
 
 ## Arquitectura
 
@@ -55,6 +64,9 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Auto-reubicación (Win) | Copia + relanzado con `DETACHED_PROCESS` | Un binario lanzado desde Descargas/`%TEMP%` se instala solo en la ruta permanente |
 | Datos de runtime (Win) | `%LOCALAPPDATA%\CronosAgent\` | Program Files es de sólo lectura para el usuario estándar que ejecuta el agente |
 | Codificación ESC/POS | `ESC t n` + transcodificación UTF-8 → página de códigos | Las ticketeras no entienden UTF-8; CP437 (fábrica) ni siquiera contiene Á Í Ó Ú |
+| Preámbulo del ticket | `ESC @` (`1B 40`) + `ESC t n`, en ese orden | El reinicio deja la impresora en un estado conocido; va **antes** de la selección porque `ESC @` restaura la página de fábrica y anularía una selección previa |
+| Pliegue de acentos | Conmutable con `strip_accents` (default `true`) | Es un fallback, no una verdad universal: en el hardware que respeta el `ESC t n` conviene apagarlo e imprimir la `ñ` de verdad |
+| Valores por defecto de codificación | `DefaultEncodingOptions()` | Un único punto de partida para config, API y tests: un campo nuevo no puede quedarse en `false` por olvido en un constructor |
 | Página por defecto | **CP1252** (`ESC t 16` = `1B 74 10`) desde la v1.5.0 | Sus bytes son los de Latin-1, que es lo que espera una ticketera conectada a Windows. Con CP850 la `Á` viaja como `0xB5` y sale como otro símbolo en cuanto el hardware pierde la selección de página |
 | Numeración de páginas | `escpos_code_page_id` en `config.json` | Válvula de escape para clones que numeran sus tablas fuera del estándar Epson, sin recompilar |
 | Tablas de códigos | `golang.org/x/text/encoding/charmap` | Implementación de referencia del proyecto Go: ~800 líneas de tablas propias sustituidas por cuatro alias que nadie tiene que revisar |
@@ -80,7 +92,7 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 cronos-pos-agent/
 ├── main.go              # Entry point: flags CLI, self-healing, reubicación, systray, goroutines
 ├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (6 endpoints)
-├── config.go            # Carga/generación de config.json, AgentVersion (1.6.0), migraciones de esquema
+├── config.go            # Carga/generación de config.json, AgentVersion (1.7.0), migraciones de esquema
 ├── network.go           # ResolvePort: fallback dinámico de puertos con scan
 ├── certs.go             # GenerateCerts: RSA 2048 + X.509 autofirmado nativo
 ├── logger.go            # RotatingLogger: escritura a archivo con rotación 10MB/3 backups
@@ -89,9 +101,9 @@ cronos-pos-agent/
 ├── selfheal_windows.go  # Build tag: windows — clonado del proceso con CREATE_NO_WINDOW + DETACHED_PROCESS
 ├── selfheal_darwin.go   # Build tag: darwin — clonado del proceso con Setsid (sesión propia)
 ├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
-├── escpos.go            # Motor de codificación: pliegue de diacríticos (NFD), ESC t n, encoder charmap y salto de gráficos
+├── escpos.go            # Motor de codificación: pliegue de diacríticos (NFD), preámbulo ESC @ + ESC t n, encoder charmap y salto de gráficos
 ├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
-├── escpos_test.go       # Tests del motor de codificación (20 casos)
+├── escpos_test.go       # Tests del motor de codificación (27 casos)
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
 ├── printer_windows.go   # Build tag: windows — spooler, RAW, cola, autostart, killOrphan
@@ -158,6 +170,8 @@ con el POS (ver "Desinstalación — política de preservación de estado").
   "port": 9100,
   "escpos_code_page": "cp1252",
   "escpos_transcode": true,
+  "strip_accents": true,
+  "escpos_initialize": true,
   "autostart": true
 }
 ```
@@ -170,12 +184,27 @@ con el POS (ver "Desinstalación — política de preservación de estado").
 | `update_url` | `string` | pos-app.tech | URL del JSON de versión para auto-updates |
 | `port` | `int` | `9100` | Puerto preferido. Si está ocupado, busca el siguiente libre (9101–9110) |
 | `escpos_code_page` | `string` | `"cp1252"` | Página de códigos que se activa en la ticketera: `cp1252`, `cp850`, `cp858`, `cp437` o `none` |
-| `escpos_transcode` | `bool` | `true` | Convierte el texto UTF-8 a los bytes de esa página de códigos |
+| `escpos_transcode` | `bool` | `true` | Convierte el texto UTF-8 a los bytes de esa página de códigos con el encoder de `charmap` |
+| `strip_accents` | `bool` | `true` | Pliega los diacríticos antes de codificar (`Ánimo` → `Animo`). Es el fallback para el hardware que ignora el `ESC t n`; en `false` los acentos se imprimen de verdad |
+| `escpos_initialize` | `bool` | `true` | Antepone `ESC @` (`1B 40`) a cada trabajo RAW. En `false` sólo se envía el `ESC t n` |
 | `escpos_code_page_id` | `int` | ausente | Sustituye el `n` de `ESC t n` por un valor concreto (0–255) manteniendo la tabla de `escpos_code_page`. Sólo para ticketeras con numeración propia |
 | `autostart` | `bool` | `true` | Preferencia de arranque con el sistema. El agente sólo repara la entrada del registro si es `true` |
 
 Las claves nuevas se añaden automáticamente al `config.json` existente en el
 primer arranque, sin perder el `api_token` ya emitido al frontend.
+
+**Si el archivo no existe, el agente lo crea él mismo al arrancar** con todos
+estos valores por defecto: `LoadConfig()` ignora el error de lectura, rellena
+cada clave ausente y escribe el resultado en `agentDir()`. No hay ningún paso
+manual ni plantilla que copiar en la caja de cobro.
+
+**Nombres de las claves.** El puerto es `port` y la página es
+`escpos_code_page`; no `printer_port` ni `code_page`. Son los nombres que ya
+están escritos en los `config.json` de todas las cajas instaladas, y renombrarlos
+habría dejado esos archivos sin efecto en la siguiente actualización —con el
+puerto y la página volviendo silenciosamente a su valor por defecto—. `code_page`
+sí existe, pero como campo **por ticket** en `POST /api/print` (ver "Endpoints
+HTTP"), que es otra cosa.
 
 ### Migraciones de esquema (`config_version`)
 
@@ -561,7 +590,7 @@ y añadirlas sería redundante.
 ### Instalación silenciosa por línea de comandos
 
 ```bash
-CronosAgentSetup-1.6.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+CronosAgentSetup-1.7.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 - `/VERYSILENT`: Sin interfaz gráfica
@@ -757,17 +786,21 @@ Peor aún: la página de fábrica de la práctica totalidad de las ticketeras es
 `Á`, `Í`, `Ó` y `Ú` no existen en esa tabla, así que no hay byte que enviar —
 sólo cambiar de página de códigos resuelve el caso.
 
-### La solución — tres mecanismos encadenados
+### La solución — cuatro mecanismos encadenados
 
 Implementados en `escpos.go` y aplicados dentro de `rawPrint()` en
 `printer_windows.go` (y en `printer_darwin.go`), justo antes de escribir un solo
 byte en el spooler. `BuildESCPOSPayload()` los aplica en este orden:
 
-| # | Mecanismo | Qué hace |
-|---|---|---|
-| 1 | **Pliegue de diacríticos** (`sanitizeTextForPrinter`) | `Á` → `A`. Es el fallback: funciona incluso si la impresora ignora el paso 3 |
-| 2 | Transcodificación (`transcodeToCodePage`) | Lo que sobrevive al pliegue y no es ASCII (`¿ ¡ € º`) se lleva a los bytes de la página |
-| 3 | Selección de página (`ESC t n`) | Activa esa misma página en el hardware |
+| # | Mecanismo | Qué hace | Conmutable con |
+|---|---|---|---|
+| 1 | **Pliegue de diacríticos** (`sanitizeTextForPrinter`) | `Á` → `A`. Es el fallback: funciona incluso si la impresora ignora el paso 4 | `strip_accents` |
+| 2 | Transcodificación (`transcodeToCodePage`) | Lo que sobrevive al pliegue y no es ASCII (`¿ ¡ € º`) se lleva a los bytes de la página, con el encoder de `charmap` | `escpos_transcode` |
+| 3 | Reinicio (`ESC @`) | Deja la impresora en un estado conocido antes de seleccionar la página | `escpos_initialize` |
+| 4 | Selección de página (`ESC t n`) | Activa esa misma página en el hardware | `escpos_code_page` |
+
+Los pasos 3 y 4 se escriben en la cabecera en ese orden —`1B 40` y después
+`1B 74 n`—, que es el único que funciona: ver "Preámbulo de todo ticket".
 
 **1. Selección de la página de códigos — `ESC t n`**
 
@@ -797,6 +830,37 @@ anularía y el ticket volvería a imprimir basura.
 
 Si el payload ya trae su propio `ESC t` en la cabecera (primeros 64 bytes), se
 asume que el frontend gestiona la codificación y el agente no interfiere.
+
+### Preámbulo de todo ticket — `ESC @` + `ESC t n`
+
+Desde la v1.7.0 el agente no espera a que el frontend inicialice la impresora:
+`insertEncodingPreamble()` abre **todo** flujo RAW con la pareja completa.
+
+```
+1B 40        ESC @      reinicio: la impresora vuelve a un estado conocido
+1B 74 10     ESC t 16   selección de página (CP1252, el valor por defecto)
+<ticket>
+```
+
+Tres reglas, y las tres importan:
+
+- **El orden no es negociable.** `ESC @` restaura la página de códigos de
+  fábrica, así que una selección puesta antes del reinicio quedaría borrada y el
+  ticket volvería a imprimir basura. La selección va siempre detrás.
+- **El reinicio no se duplica.** Si el payload ya abre con uno o varios `ESC @`
+  propios, se conservan los suyos y la selección entra detrás del último; el
+  agente no añade el suyo. Mandar dos reinicios sería inocuo sobre el papel,
+  pero un `ESC @` extra en medio de lo que el frontend considera su propio
+  preámbulo es de lo que no se depura mirando un recibo.
+- **Se puede desactivar** con `"escpos_initialize": false`, para el frontend que
+  gestiona el reinicio por su cuenta a mitad de un flujo de varios tickets. En
+  ese modo se sigue enviando el `ESC t n`.
+
+Qué resuelve. La página de códigos es estado del firmware, y ese estado
+sobrevive entre trabajos: un ticket anterior que dejara activa otra tabla —o una
+impresora que arranca en su tabla de fábrica— hacía que el `ESC t n` fuese la
+única línea de defensa. Abriendo con `ESC @` el ticket no depende de lo que
+hiciera el trabajo anterior: se reinicia, se selecciona la página y se imprime.
 
 **2. Transcodificación UTF-8 → bytes de la página de códigos (encoder Windows-1252)**
 
@@ -903,7 +967,8 @@ Qué cambia exactamente:
 
 1. `defaultCodePage` pasa de `cp850` a `cp1252` (`escpos.go`).
 2. Todo flujo de impresión RAW abre con `1B 74 10` (`ESC t 16` → CP1252),
-   inyectado detrás del `ESC @` inicial si el payload lo trae.
+   detrás del `ESC @` —el del propio payload si lo trae y, desde la v1.7.0, el
+   que inyecta el agente si no lo trae (ver "Preámbulo de todo ticket").
 3. El texto se transcodifica a los bytes de CP1252 (`Á` → `0xC1`).
 4. Los `config.json` ya existentes se migran de `cp850` a `cp1252` mediante
    `config_version` (ver "Migraciones de esquema"): sin esa migración las cajas
@@ -930,21 +995,54 @@ se vuelve a la numeración estándar de Epson.
 ### Configuración
 
 Global en `config.json` (`escpos_code_page`, `escpos_transcode`,
-`escpos_code_page_id`) y anulable por ticket con los campos opcionales
-`code_page` y `transcode` de `POST /api/print`. Se aceptan alias: `1252`,
-`windows-1252`, `850`, `pc850`, `latin1`, `off`…
+`strip_accents`, `escpos_initialize`, `escpos_code_page_id`) y anulable por
+ticket con los campos opcionales `code_page` y `transcode` de
+`POST /api/print`. Se aceptan alias: `1252`, `windows-1252`, `850`, `pc850`,
+`latin1`, `off`…
+
+Los cuatro interruptores parten de `DefaultEncodingOptions()` (`escpos.go`), que
+es el único sitio donde vive el valor por defecto de cada uno:
+
+```go
+func DefaultEncodingOptions() EncodingOptions {
+    return EncodingOptions{
+        CodePage:     defaultCodePage, // cp1252
+        Transcode:    true,
+        StripAccents: true,
+        Initialize:   true,
+    }
+}
+```
+
+`EncodingOptionsFor()` parte de ahí y aplica encima lo que diga el
+`config.json` y, después, los overrides del ticket. Construir las opciones desde
+el valor cero de la struct sería la forma obvia de hacerlo y es justo la que se
+evita: un campo `bool` nuevo se quedaría en `false` en el constructor que nadie
+recordó actualizar, y el síntoma —una caja que deja de plegar acentos— aparece
+en el papel, no en el compilador. Los tests construyen sus opciones igual.
+
+Cuál combinación usar:
+
+| Hardware | `strip_accents` | Resultado |
+|---|---|---|
+| Ticketera que respeta el `ESC t n` | `false` | `Ñoño 20° €` se imprime tal cual, un byte por carácter |
+| Clon que ignora el `ESC t n` | `true` (default) | `Nono 20° €`: las letras base son ASCII y salen bien en cualquier tabla |
 
 ### Cobertura de tests
 
-`escpos_test.go` — 20 casos: bytes exactos de las mayúsculas acentuadas en CP850
+`escpos_test.go` — 27 casos: bytes exactos de las mayúsculas acentuadas en CP850
 y CP1252 (a nivel de `transcodeToCodePage`, que sigue siendo la capa que traduce),
-`Ánimo` completo con la configuración por defecto (`1B 74 10` + `A n i m o`, ya
-plegado), pliegue de diacríticos carácter a carácter —incluida la entrada ya
-descompuesta `A`+U+0301 y la eñe—, integridad del logo raster y de los binarios
-frente al pliegue, override del selector, degradación a ASCII dentro de un tramo
-de texto y en CP437, integridad de los comandos ESC/POS, logo raster con UTF-8
-incrustado que debe salir intacto, inserción después de `ESC @`, respeto a un
-`ESC t` propio del frontend y resolución de alias.
+`Ánimo` completo con la configuración por defecto (`1B 40` + `1B 74 10` +
+`A n i m o`, ya plegado), preámbulo completo de un ticket ASCII, pliegue de
+diacríticos carácter a carácter —incluida la entrada ya descompuesta `A`+U+0301 y
+la eñe—, integridad del logo raster y de los binarios frente al pliegue, override
+del selector, degradación a ASCII dentro de un tramo de texto y en CP437,
+sustitución por `?` de la runa que no existe en la página ni en `asciiFallback`,
+integridad de los comandos ESC/POS, logo raster con UTF-8 incrustado que debe
+salir intacto, inserción después de `ESC @`, no duplicación del `ESC @` propio del
+payload, `escpos_initialize: false`, `strip_accents: false` con `Ñoño 20° €`
+saliendo como bytes de CP1252, respeto a un `ESC t` propio del frontend,
+resolución de alias y los valores de `DefaultEncodingOptions()`.
 
 Los tests comprueban **bytes exactos**, así que también sirvieron de red al
 sustituir las tablas propias por `charmap`: si el codificador de `x/text`
@@ -1035,11 +1133,14 @@ verdad son texto. Ese lector se extrajo a una función compartida precisamente
 para que las dos transformaciones no puedan discrepar sobre qué bytes son texto.
 
 ```go
-payload := sanitizePayloadText(data)      // Á -> A
+payload := data
+if opts.StripAccents {
+    payload = sanitizePayloadText(payload)              // Á -> A
+}
 if opts.Transcode {
     payload = transcodeToCodePage(payload, cp.Charmap)  // ¿ -> 0xBF
 }
-return insertCodePageCommand(payload, opts.Selector(cp)), nil
+return insertEncodingPreamble(payload, opts.Selector(cp), opts.Initialize), nil
 ```
 
 ### Qué implica — y qué no se pierde
@@ -1056,6 +1157,15 @@ return insertCodePageCommand(payload, opts.Selector(cp)), nil
   traducción a la página de códigos; el pliegue es la capa que tiene que
   funcionar *sobre todo* cuando la página no se aplica, así que se ejecuta igual
   con `"escpos_transcode": false`.
+- **Tiene su propio interruptor: `strip_accents`** (default `true`). Es un
+  fallback, no una verdad universal: en una ticketera que sí respeta el
+  `ESC t n` el pliegue está de más y cuesta las eñes. Con
+  `"strip_accents": false` el texto llega al codificador con sus acentos y
+  `Ñoño 20° €` sale como `D1 6F F1 6F 20 32 30 B0 20 80` en CP1252 —un byte por
+  carácter— en vez de plegado a `Nono`. Es el interruptor que se toca cuando el
+  operador se queja de que le faltan las eñes, y el único cambio necesario: no
+  hay que recompilar ni reinstalar, basta con editar el `config.json` y
+  reiniciar el agente.
 - **`escpos_code_page: "none"` lo desactiva todo**, pliegue incluido. Sigue
   siendo la válvula de escape para el integrador que quiere mandar sus bytes tal
   cual: en ese modo el agente no toca el payload.
@@ -1451,6 +1561,14 @@ Es decir, "ARTÍCULO ÑOÑO" se imprime "ARTICULO NONO": el pliegue de diacríti
 actúa antes de la transcodificación, así que esas letras ya viajan en ASCII y no
 dependen de que el hardware respete el `ESC t 16`. Ver "Pliegue de Diacríticos".
 
+En este ejemplo el `1B 40` de la cabecera es el del propio payload. Si el ticket
+**no** trae ninguno, el agente antepone el suyo y lo enviado empieza igual —
+`1B 40 1B 74 10 …`—: el preámbulo es siempre el mismo, lo traiga el frontend o
+no (ver "Preámbulo de todo ticket"). Y con `"strip_accents": false` en el
+`config.json` esas mismas letras viajarían acentuadas, un byte por carácter
+(`ARTÍCULO ÑOÑO` → `41 52 54 CD 43 55 4C 4F 20 D1 4F D1 4F`), que es lo que hay
+que configurar en una ticketera que sí respeta la selección de página.
+
 | Campo | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
 | `printer_name` | `string` | Sí | Nombre de la impresora en el SO |
@@ -1523,9 +1641,9 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc \
 # 2. Generar instalador (ejecutar en Windows)
 ISCC.exe installer/setup.iss
 
-# 3. Resultado: installer/Output/CronosAgentSetup-1.6.0.exe
+# 3. Resultado: installer/Output/CronosAgentSetup-1.7.0.exe
 # 4. Despliegue silencioso en cajas de cobro:
-#    CronosAgentSetup-1.6.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+#    CronosAgentSetup-1.7.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 ## Fases — Historial Completo
