@@ -28,7 +28,13 @@ type QueueInfo struct {
 	Jobs        []PrintJob `json:"jobs,omitempty"`
 }
 
+// PDFPrintRequest carries a PDF document to a conventional printer. The
+// payload field is "printer_data", the same name PrintRequest uses for a RAW
+// ticket: the frontend speaks one vocabulary to both print endpoints, so a
+// single agentFetch wrapper serves them and nobody has to remember which
+// endpoint renamed the field. It used to be "pdf_data" here, which silently
+// turned every PDF job into a 400.
 type PDFPrintRequest struct {
 	PrinterName string `json:"printer_name"`
-	PDFData     string `json:"pdf_data"`
+	PrinterData string `json:"printer_data"`
 }

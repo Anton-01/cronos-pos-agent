@@ -2,7 +2,7 @@
 
 ## Estado Actual
 
-**Fase 12: Calidad Empresarial del Instalador** — Finalizado
+**Fase 13: Enrutador de Descubrimiento y Contrato de Impresión** — Finalizado (v1.8.0)
 
 Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código).
 
@@ -31,6 +31,17 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
   `true`): en una ticketera que sí respeta el `ESC t n` se pone en `false` y los
   acentos, la `ñ` y la `Ñ` se imprimen de verdad, transcodificados por
   `charmap`. Ver "Pliegue de Diacríticos".
+- **`POST /api/print/pdf` acepta `printer_data`** (antes `pdf_data`): el
+  frontend manda el mismo par `printer_name` + `printer_data` a los dos
+  endpoints de impresión, y la etiqueta divergente del struct hacía que cada
+  arqueo de caja recibiera un `400`. Ver "Endpoint `POST /api/print/pdf` —
+  Detalle Técnico".
+- **Enrutador partido en superficie pública y superficie protegida**: el
+  descubrimiento (`GET /health` y `GET /api/health`) responde sin token, y el
+  resto de `/api/` se monta detrás del Auth como un subárbol fail-closed. CORS
+  sigue envolviendo el servidor entero, health check incluido. Contrato fijado
+  en `server_test.go`. Ver "Enrutador — Superficie Pública y Superficie
+  Protegida".
 
 ## Arquitectura
 
@@ -42,6 +53,7 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | System tray | `github.com/getlantern/systray` v1.2.2 | API simple, soporte Windows/Mac/Linux |
 | Servidor HTTP | `net/http` (stdlib) | Sin dependencias externas, rendimiento suficiente para agente local |
 | CORS | Middleware dinámico desde `config.json` | Orígenes configurables sin recompilar |
+| Enrutador | Mux público + subárbol `/api/` montado tras el Auth | El descubrimiento (`/api/health`) tiene que responder antes de que el frontend tenga token; el resto de `/api/` queda protegido por defecto, sin listas de excepciones dentro del middleware |
 | Binding | `127.0.0.1:{port}` | Solo loopback, puerto dinámico con fallback |
 | Auth | Token local UUID v4 + header `X-Cronos-Agent-Token` | Sin servidor externo, generado al primer arranque |
 | Certificados SSL | `crypto/rsa` + `crypto/x509` (stdlib) | Generación nativa sin OpenSSL ni comandos externos |
@@ -91,8 +103,8 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 ```
 cronos-pos-agent/
 ├── main.go              # Entry point: flags CLI, self-healing, reubicación, systray, goroutines
-├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (6 endpoints)
-├── config.go            # Carga/generación de config.json, AgentVersion (1.7.0), migraciones de esquema
+├── server.go            # Router (mux público + mux protegido), middlewares (CORS dinámico + Auth), handlers (6 endpoints)
+├── config.go            # Carga/generación de config.json, AgentVersion (1.8.0), migraciones de esquema
 ├── network.go           # ResolvePort: fallback dinámico de puertos con scan
 ├── certs.go             # GenerateCerts: RSA 2048 + X.509 autofirmado nativo
 ├── logger.go            # RotatingLogger: escritura a archivo con rotación 10MB/3 backups
@@ -104,6 +116,7 @@ cronos-pos-agent/
 ├── escpos.go            # Motor de codificación: pliegue de diacríticos (NFD), preámbulo ESC @ + ESC t n, encoder charmap y salto de gráficos
 ├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
 ├── escpos_test.go       # Tests del motor de codificación (27 casos)
+├── server_test.go       # Tests del enrutador: superficie pública sin token, /api/ protegido, CORS y contrato de los endpoints de impresión
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
 ├── printer_windows.go   # Build tag: windows — spooler, RAW, cola, autostart, killOrphan
@@ -590,7 +603,7 @@ y añadirlas sería redundante.
 ### Instalación silenciosa por línea de comandos
 
 ```bash
-CronosAgentSetup-1.7.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+CronosAgentSetup-1.8.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 - `/VERYSILENT`: Sin interfaz gráfica
@@ -1519,9 +1532,72 @@ arrastrándola a `/Applications` y el propio Finder da esa confirmación.
 
 **Flujo de autenticación:**
 1. El frontend React lee el token de `config.json` (o lo recibe del instalador/setup).
-2. Toda petición a `/api/*` debe incluir el header `X-Cronos-Agent-Token: <token>`.
+2. Toda petición de trabajo (`/api/print`, `/api/print/pdf`, `/api/printers`,
+   `/api/printers/queue`) debe incluir el header `X-Cronos-Agent-Token: <token>`.
 3. Si el header falta o no coincide, el agente responde `401 Unauthorized`.
-4. El endpoint `/health` está exento de autenticación.
+4. Los endpoints de descubrimiento `/health` y `/api/health` están exentos de
+   autenticación: son la superficie pública del agente (ver "Enrutador —
+   Superficie Pública y Superficie Protegida").
+
+## Enrutador — Superficie Pública y Superficie Protegida
+
+### El problema que resolvió
+
+El middleware de autenticación envolvía el mux completo y sólo dejaba pasar
+`/health` por una comparación de ruta escrita dentro del propio middleware. El
+frontend, sin embargo, descubre al agente con `GET /api/health` **antes** de
+tener ningún token que enviar (el usuario todavía no lo ha pegado en
+`Configuración → Impresora`), así que el botón "Detectar Agente Local" recibía
+un `401 Token ausente` de un agente que estaba perfectamente vivo en el 9100.
+
+### El enrutador
+
+`NewRouter()` ya no monta un único mux: construye dos superficies explícitas y
+las compone.
+
+| Función | Rutas | Auth |
+|---|---|---|
+| `newPublicMux()` | `GET /health`, `GET /api/health` | No |
+| `newProtectedMux()` | `GET /api/printers`, `GET /api/printers/queue`, `POST /api/print`, `POST /api/print/pdf` | Sí |
+
+```
+corsMiddleware                       (envuelve TODO el servidor)
+└── root  = newPublicMux()           /health, /api/health  →  sin token
+    └── "/api/"  →  authMiddleware(  newProtectedMux()  )  →  con token
+```
+
+El subárbol `/api/` se monta **entero** detrás del token, no ruta por ruta.
+`http.ServeMux` resuelve primero el patrón más específico, así que `/api/health`
+(patrón exacto) sigue cayendo en el handler público mientras `/api/print`,
+`/api/printers` y compañía caen en el mux protegido. La consecuencia buscada es
+que el enrutador es **fail-closed**: un endpoint `/api/` nuevo nace protegido
+aunque quien lo escriba no se acuerde de tocar esta sección.
+
+`authMiddleware` quedó limpio de rutas: ya no compara `r.URL.Path` contra nada.
+Es un guardián puro — token válido o `401` — y quién pasa por él lo decide el
+enrutador. Esa era la excepción que se había quedado corta al añadirse
+`/api/health` al agente.
+
+### CORS por encima de todo
+
+`corsMiddleware` envuelve la raíz, no el subárbol protegido, y por tanto también
+las rutas públicas. Es imprescindible: sin la cabecera
+`Access-Control-Allow-Origin` el navegador descarta la respuesta del ping de
+descubrimiento antes de que el frontend pueda leerla, y el resultado visible
+sería idéntico al del `401` original ("agente no detectado"). El preflight
+`OPTIONS` sigue respondiendo `204` a los orígenes de `config.json` y `403` a
+cualquier otro, health check incluido.
+
+### Contrato verificado (`server_test.go`)
+
+| Test | Comprueba |
+|---|---|
+| `TestPublicRoutesAnswerWithoutToken` | `/health` y `/api/health` responden `200` sin token, con `status: ok` y la versión del agente |
+| `TestProtectedRoutesRejectMissingOrWrongToken` | Las cuatro rutas de trabajo — y cualquier `/api/` no registrada — responden `401` sin token o con uno incorrecto |
+| `TestProtectedRoutesAcceptValidToken` | Con token válido la petición atraviesa el middleware (se usa el método HTTP equivocado a propósito: el `405` prueba que se alcanzó el handler sin mandar nada a una impresora real) |
+| `TestCORSWrapsPublicAndProtectedRoutes` | La cabecera `Access-Control-Allow-Origin` viaja también en las rutas públicas |
+| `TestCORSPreflightOnPublicHealth` | El preflight de `/api/health` responde `204` con `Access-Control-Allow-Headers` |
+| `TestCORSRejectsUnknownOrigin` | Un origen fuera de `config.json` recibe `403` y ninguna cabecera CORS |
 
 ## Endpoints HTTP
 
@@ -1530,7 +1606,7 @@ Base: `http://127.0.0.1:{port}` (puerto dinámico, default 9100)
 | Método | Ruta | Auth | Descripción |
 |---|---|---|---|
 | `GET` | `/health` | No | Health check básico (status, service, version) |
-| `GET` | `/api/health` | Si | Diagnóstico con uptime y uso de RAM |
+| `GET` | `/api/health` | **No** | Descubrimiento del agente: diagnóstico con versión, uptime y uso de RAM |
 | `GET` | `/api/printers` | Si | Lista impresoras instaladas en el SO |
 | `GET` | `/api/printers/queue` | Si | Cola de impresión de una impresora específica |
 | `POST` | `/api/print` | Si | Envía datos RAW (ESC/POS) a una impresora térmica |
@@ -1628,7 +1704,24 @@ go run github.com/akavel/rsrc@v0.10.2 \        # rsrc_windows_amd64.syso (icono 
 ```
 
 El `.syso` embebe la versión declarada en `app.manifest`, así que hay que
-regenerarlo al subir de versión.
+regenerarlo al subir de versión. En la v1.8.0 se hizo: `app.manifest` pasó de
+`1.6.0.0` —se había quedado atrás en la v1.7.0— a `1.8.0.0`, y el `.syso` se
+regeneró con el comando de arriba. La salida de `rsrc` es determinista: el
+artefacto anterior se reproduce byte a byte desde su manifiesto, y el nuevo
+difiere en el único byte de la cadena de versión.
+
+### Subir de versión — los cuatro puntos
+
+La versión no vive en un único sitio, y tres de los cuatro puntos son
+silenciosos si se olvidan (el binario compila igual y el instalador se genera
+igual, sólo que mintiendo sobre su versión):
+
+| Punto | Archivo | Efecto si se olvida |
+|---|---|---|
+| `AgentVersion` | `config.go` | `/api/health` reporta la versión vieja y el panel del POS muestra "🟢 Agente Detectado" con el número anterior; el marcador `welcome-shown` no se invalida y la bienvenida no se vuelve a mostrar tras actualizar |
+| `#define AppVersion` | `installer/setup.iss` | `AppVersion` y el nombre del `.exe` de salida (`OutputBaseFilename`) se quedan atrás, y Windows ve la actualización como una reinstalación de la misma versión |
+| `version=` del `assemblyIdentity` | `app.manifest` | Las propiedades del ejecutable en el Explorador siguen mostrando la versión vieja |
+| `rsrc_windows_amd64.syso` | regenerado con `rsrc` | El `.exe` enlaza el manifiesto **anterior**: editar `app.manifest` sin regenerar el `.syso` no cambia nada en el binario |
 
 ### Pipeline completo de distribución Windows:
 
@@ -1641,9 +1734,9 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc \
 # 2. Generar instalador (ejecutar en Windows)
 ISCC.exe installer/setup.iss
 
-# 3. Resultado: installer/Output/CronosAgentSetup-1.7.0.exe
+# 3. Resultado: installer/Output/CronosAgentSetup-1.8.0.exe
 # 4. Despliegue silencioso en cajas de cobro:
-#    CronosAgentSetup-1.7.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+#    CronosAgentSetup-1.8.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 ## Fases — Historial Completo
@@ -1720,6 +1813,17 @@ ISCC.exe installer/setup.iss
 - ~~Infraestructura de firma de código: `SignTool` y `SignedUninstaller` comentados, con el procedimiento de inyección del certificado documentado en los comentarios del `.iss`~~ ✓
 - ~~Comentarios del `.iss` unificados en inglés, explicando qué hace cada directiva y cómo se sostiene la garantía de preservación~~ ✓
 
+### Fase 13: Enrutador de Descubrimiento — Rutas Públicas y Protegidas ✓
+- ~~`GET /api/health` movido a la superficie pública: el frontend descubre al agente antes de tener token y ya no recibe `401`~~ ✓
+- ~~`NewRouter()` compone `newPublicMux()` (health) y `newProtectedMux()` (impresión y spooler) en vez de un único mux~~ ✓
+- ~~Subárbol `/api/` montado detrás del Auth: el enrutador es fail-closed y un endpoint nuevo nace protegido~~ ✓
+- ~~`authMiddleware` sin comparaciones de ruta: guardián puro, la política de acceso vive en el enrutador~~ ✓
+- ~~CORS confirmado por encima de todo el servidor, health check incluido (sin la cabecera el navegador bloquea el ping público)~~ ✓
+- ~~Suite `server_test.go` (6 tests): superficie pública sin token, `401` en las rutas de trabajo, token válido y CORS con orígenes permitidos y prohibidos~~ ✓
+- ~~`PDFPrintRequest.PrinterData` con etiqueta `json:"printer_data"`: los dos endpoints de impresión comparten vocabulario y `POST /api/print/pdf` deja de responder `400` a un cuerpo correcto~~ ✓
+- ~~Dos tests más (8 en total): decodificación del cuerpo del PDF y mensaje de validación homogéneo en `/api/print` y `/api/print/pdf`~~ ✓
+- ~~Versión 1.8.0 en los cuatro puntos: `AgentVersion`, `#define AppVersion` del instalador, `assemblyIdentity` de `app.manifest` (arrastraba `1.6.0.0`) y `rsrc_windows_amd64.syso` regenerado~~ ✓
+
 ## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
 
 Los subprocesos nativos de Windows (`powershell` para `Get-PrintJob`, `tasklist` para self-healing) provocaban un parpadeo de ventana de consola/PowerShell cada vez que se consultaba la lista o la cola de impresoras. Para eliminarlo por completo se inyecta la bandera nativa `CREATE_NO_WINDOW` (`0x08000000`) junto con `HideWindow` en el `SysProcAttr` de **cada** invocación.
@@ -1784,9 +1888,23 @@ Content-Type: application/json
 ```json
 {
   "printer_name": "Nombre_Impresora_Oficina",
-  "pdf_data": "JVBERi0xLjQKMS... (Base64 del archivo PDF)"
+  "printer_data": "JVBERi0xLjQKMS... (Base64 del archivo PDF)"
 }
 ```
+
+| Campo | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `printer_name` | `string` | Sí | Nombre de la impresora convencional en el SO |
+| `printer_data` | `string` | Sí | Documento PDF en Base64 |
+
+El campo del payload se llamaba `pdf_data` hasta la v1.7.0 inclusive, mientras que el
+frontend enviaba `printer_data` —el mismo nombre que usa `POST /api/print`— en
+los dos endpoints de impresión. El resultado era que **todo arqueo de caja
+enviado a imprimir moría en un `400`**: el `printer_data` del cuerpo no encajaba
+en ningún campo del struct, `PDFData` quedaba vacío y la validación de campos
+obligatorios se disparaba. Se corrigió del lado del agente para no romper la
+estandarización del cliente: los dos endpoints hablan ahora el mismo vocabulario
+(`printer_name` + `printer_data`) y un único `agentFetch` los sirve.
 
 ### Respuesta exitosa (200)
 
@@ -1808,7 +1926,7 @@ Content-Type: application/json
 
 ### Flujo interno
 
-1. El handler decodifica el Base64 de `pdf_data` a bytes
+1. El handler decodifica el Base64 de `printer_data` a bytes
 2. Crea un archivo temporal seguro (`os.CreateTemp`) con extensión `.pdf`
 3. Escribe los bytes al archivo temporal
 4. Invoca la función `printPDF()` específica de la plataforma (build tags)

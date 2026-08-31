@@ -42,13 +42,12 @@ func corsMiddleware(allowedOrigins map[string]bool, next http.Handler) http.Hand
 	})
 }
 
+// authMiddleware guards every handler it wraps: the request must carry a valid
+// X-Cronos-Agent-Token header or it is rejected with 401. It deliberately knows
+// nothing about paths — deciding which routes are public and which are guarded
+// is the router's job (see NewRouter).
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		provided := r.Header.Get("X-Cronos-Agent-Token")
 		if provided == "" || provided != token {
 			w.Header().Set("Content-Type", "application/json")
@@ -63,18 +62,50 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 	})
 }
 
-func NewRouter(cfg Config) http.Handler {
+// newPublicMux builds the discovery surface: the routes that must answer
+// without a token. The POS frontend pings them to find out whether the agent is
+// running on port 9100 before it has any token to send, so putting them behind
+// the auth middleware would make discovery impossible (it used to answer 401).
+// Nothing here touches the printers or reveals local configuration.
+func newPublicMux() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/api/health", handleAPIHealth)
+
+	return mux
+}
+
+// newProtectedMux builds the working surface: every route that reaches the
+// local hardware. It is never mounted on its own — NewRouter always puts the
+// auth middleware in front of it.
+func newProtectedMux() *http.ServeMux {
+	mux := http.NewServeMux()
+
 	mux.HandleFunc("/api/printers", handlePrinters)
 	mux.HandleFunc("/api/printers/queue", handlePrinterQueue)
 	mux.HandleFunc("/api/print", handlePrint)
 	mux.HandleFunc("/api/print/pdf", handlePrintPDF)
 
+	return mux
+}
+
+func NewRouter(cfg Config) http.Handler {
+	root := newPublicMux()
+
+	// The whole /api/ subtree hangs behind the token check, and ServeMux
+	// resolves the most specific pattern first: /api/health keeps hitting the
+	// public handler while /api/print, /api/printers and friends land in the
+	// guarded mux. Mounting the subtree instead of each route one by one also
+	// makes the default fail-closed — a new /api/ endpoint is protected the
+	// moment it is registered, even if someone forgets about this file.
+	root.Handle("/api/", authMiddleware(cfg.APIToken, newProtectedMux()))
+
+	// CORS wraps the entire server, public routes included: without the
+	// Access-Control-Allow-Origin header the browser blocks the discovery ping
+	// before the agent ever gets to answer it.
 	originsMap := buildOriginsMap(cfg.AllowedOrigins)
-	return corsMiddleware(originsMap, authMiddleware(cfg.APIToken, mux))
+	return corsMiddleware(originsMap, root)
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -259,21 +290,21 @@ func handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.PrinterName == "" || req.PDFData == "" {
+	if req.PrinterName == "" || req.PrinterData == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Los campos 'printer_name' y 'pdf_data' son obligatorios",
+			"error": "Los campos 'printer_name' y 'printer_data' son obligatorios",
 		})
 		return
 	}
 
-	pdfBytes, err := base64.StdEncoding.DecodeString(req.PDFData)
+	pdfBytes, err := base64.StdEncoding.DecodeString(req.PrinterData)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "El campo 'pdf_data' no es Base64 válido",
+			"error":   "El campo 'printer_data' no es Base64 válido",
 			"details": err.Error(),
 		})
 		return
