@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -164,5 +165,49 @@ func TestCORSRejectsUnknownOrigin(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("preflight from an unlisted origin: got Access-Control-Allow-Origin %q, want it empty", got)
+	}
+}
+
+// The frontend sends {printer_name, printer_data} to both print endpoints. The
+// PDF request used to name its payload "pdf_data", so a well-formed job was
+// answered with "Los campos 'printer_name' y 'pdf_data' son obligatorios".
+func TestPDFPrintRequestDecodesPrinterData(t *testing.T) {
+	body := `{"printer_name":"Oficina-HP","printer_data":"JVBERi0xLjQK"}`
+
+	var req PDFPrintRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("decoding the PDF request: %v", err)
+	}
+
+	if req.PrinterName != "Oficina-HP" {
+		t.Errorf("got printer_name %q, want %q", req.PrinterName, "Oficina-HP")
+	}
+	if req.PrinterData != "JVBERi0xLjQK" {
+		t.Errorf("got printer_data %q, want it filled from the payload", req.PrinterData)
+	}
+}
+
+// Both print endpoints must reject an incomplete body the same way, and the
+// message must name the field the frontend actually sends.
+func TestPrintEndpointsRejectMissingPayload(t *testing.T) {
+	router := testRouter()
+
+	for _, path := range []string{"/api/print", "/api/print/pdf"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"printer_name":"Oficina-HP"}`))
+		req.Header.Set("X-Cronos-Agent-Token", testToken)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("POST %s without payload: got %d, want %d", path, rec.Code, http.StatusBadRequest)
+		}
+
+		var body map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("POST %s: response is not valid JSON: %v", path, err)
+		}
+		if !strings.Contains(body["error"], "printer_data") {
+			t.Errorf("POST %s: got error %q, want it to name 'printer_data'", path, body["error"])
+		}
 	}
 }

@@ -31,6 +31,11 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
   `true`): en una ticketera que sí respeta el `ESC t n` se pone en `false` y los
   acentos, la `ñ` y la `Ñ` se imprimen de verdad, transcodificados por
   `charmap`. Ver "Pliegue de Diacríticos".
+- **`POST /api/print/pdf` acepta `printer_data`** (antes `pdf_data`): el
+  frontend manda el mismo par `printer_name` + `printer_data` a los dos
+  endpoints de impresión, y la etiqueta divergente del struct hacía que cada
+  arqueo de caja recibiera un `400`. Ver "Endpoint `POST /api/print/pdf` —
+  Detalle Técnico".
 - **Enrutador partido en superficie pública y superficie protegida**: el
   descubrimiento (`GET /health` y `GET /api/health`) responde sin token, y el
   resto de `/api/` se monta detrás del Auth como un subárbol fail-closed. CORS
@@ -111,7 +116,7 @@ cronos-pos-agent/
 ├── escpos.go            # Motor de codificación: pliegue de diacríticos (NFD), preámbulo ESC @ + ESC t n, encoder charmap y salto de gráficos
 ├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
 ├── escpos_test.go       # Tests del motor de codificación (27 casos)
-├── server_test.go       # Tests del enrutador: superficie pública sin token, /api/ protegido y CORS
+├── server_test.go       # Tests del enrutador: superficie pública sin token, /api/ protegido, CORS y contrato de los endpoints de impresión
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
 ├── printer_windows.go   # Build tag: windows — spooler, RAW, cola, autostart, killOrphan
@@ -1798,6 +1803,8 @@ ISCC.exe installer/setup.iss
 - ~~`authMiddleware` sin comparaciones de ruta: guardián puro, la política de acceso vive en el enrutador~~ ✓
 - ~~CORS confirmado por encima de todo el servidor, health check incluido (sin la cabecera el navegador bloquea el ping público)~~ ✓
 - ~~Suite `server_test.go` (6 tests): superficie pública sin token, `401` en las rutas de trabajo, token válido y CORS con orígenes permitidos y prohibidos~~ ✓
+- ~~`PDFPrintRequest.PrinterData` con etiqueta `json:"printer_data"`: los dos endpoints de impresión comparten vocabulario y `POST /api/print/pdf` deja de responder `400` a un cuerpo correcto~~ ✓
+- ~~Dos tests más (8 en total): decodificación del cuerpo del PDF y mensaje de validación homogéneo en `/api/print` y `/api/print/pdf`~~ ✓
 
 ## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
 
@@ -1863,9 +1870,23 @@ Content-Type: application/json
 ```json
 {
   "printer_name": "Nombre_Impresora_Oficina",
-  "pdf_data": "JVBERi0xLjQKMS... (Base64 del archivo PDF)"
+  "printer_data": "JVBERi0xLjQKMS... (Base64 del archivo PDF)"
 }
 ```
+
+| Campo | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `printer_name` | `string` | Sí | Nombre de la impresora convencional en el SO |
+| `printer_data` | `string` | Sí | Documento PDF en Base64 |
+
+El campo del payload se llamaba `pdf_data` hasta la v1.7.0, mientras que el
+frontend enviaba `printer_data` —el mismo nombre que usa `POST /api/print`— en
+los dos endpoints de impresión. El resultado era que **todo arqueo de caja
+enviado a imprimir moría en un `400`**: el `printer_data` del cuerpo no encajaba
+en ningún campo del struct, `PDFData` quedaba vacío y la validación de campos
+obligatorios se disparaba. Se corrigió del lado del agente para no romper la
+estandarización del cliente: los dos endpoints hablan ahora el mismo vocabulario
+(`printer_name` + `printer_data`) y un único `agentFetch` los sirve.
 
 ### Respuesta exitosa (200)
 
@@ -1887,7 +1908,7 @@ Content-Type: application/json
 
 ### Flujo interno
 
-1. El handler decodifica el Base64 de `pdf_data` a bytes
+1. El handler decodifica el Base64 de `printer_data` a bytes
 2. Crea un archivo temporal seguro (`os.CreateTemp`) con extensión `.pdf`
 3. Escribe los bytes al archivo temporal
 4. Invoca la función `printPDF()` específica de la plataforma (build tags)

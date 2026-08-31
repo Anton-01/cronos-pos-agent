@@ -290,21 +290,21 @@ func handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.PrinterName == "" || req.PDFData == "" {
+	if req.PrinterName == "" || req.PrinterData == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Los campos 'printer_name' y 'pdf_data' son obligatorios",
+			"error": "Los campos 'printer_name' y 'printer_data' son obligatorios",
 		})
 		return
 	}
 
-	pdfBytes, err := base64.StdEncoding.DecodeString(req.PDFData)
+	pdfBytes, err := base64.StdEncoding.DecodeString(req.PrinterData)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "El campo 'pdf_data' no es Base64 válido",
+			"error":   "El campo 'printer_data' no es Base64 válido",
 			"details": err.Error(),
 		})
 		return
