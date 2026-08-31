@@ -31,6 +31,12 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
   `true`): en una ticketera que sí respeta el `ESC t n` se pone en `false` y los
   acentos, la `ñ` y la `Ñ` se imprimen de verdad, transcodificados por
   `charmap`. Ver "Pliegue de Diacríticos".
+- **Enrutador partido en superficie pública y superficie protegida**: el
+  descubrimiento (`GET /health` y `GET /api/health`) responde sin token, y el
+  resto de `/api/` se monta detrás del Auth como un subárbol fail-closed. CORS
+  sigue envolviendo el servidor entero, health check incluido. Contrato fijado
+  en `server_test.go`. Ver "Enrutador — Superficie Pública y Superficie
+  Protegida".
 
 ## Arquitectura
 
@@ -42,6 +48,7 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | System tray | `github.com/getlantern/systray` v1.2.2 | API simple, soporte Windows/Mac/Linux |
 | Servidor HTTP | `net/http` (stdlib) | Sin dependencias externas, rendimiento suficiente para agente local |
 | CORS | Middleware dinámico desde `config.json` | Orígenes configurables sin recompilar |
+| Enrutador | Mux público + subárbol `/api/` montado tras el Auth | El descubrimiento (`/api/health`) tiene que responder antes de que el frontend tenga token; el resto de `/api/` queda protegido por defecto, sin listas de excepciones dentro del middleware |
 | Binding | `127.0.0.1:{port}` | Solo loopback, puerto dinámico con fallback |
 | Auth | Token local UUID v4 + header `X-Cronos-Agent-Token` | Sin servidor externo, generado al primer arranque |
 | Certificados SSL | `crypto/rsa` + `crypto/x509` (stdlib) | Generación nativa sin OpenSSL ni comandos externos |
@@ -91,7 +98,7 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 ```
 cronos-pos-agent/
 ├── main.go              # Entry point: flags CLI, self-healing, reubicación, systray, goroutines
-├── server.go            # Router, middlewares (CORS dinámico + Auth), handlers (6 endpoints)
+├── server.go            # Router (mux público + mux protegido), middlewares (CORS dinámico + Auth), handlers (6 endpoints)
 ├── config.go            # Carga/generación de config.json, AgentVersion (1.7.0), migraciones de esquema
 ├── network.go           # ResolvePort: fallback dinámico de puertos con scan
 ├── certs.go             # GenerateCerts: RSA 2048 + X.509 autofirmado nativo
@@ -104,6 +111,7 @@ cronos-pos-agent/
 ├── escpos.go            # Motor de codificación: pliegue de diacríticos (NFD), preámbulo ESC @ + ESC t n, encoder charmap y salto de gráficos
 ├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
 ├── escpos_test.go       # Tests del motor de codificación (27 casos)
+├── server_test.go       # Tests del enrutador: superficie pública sin token, /api/ protegido y CORS
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
 ├── printer_windows.go   # Build tag: windows — spooler, RAW, cola, autostart, killOrphan
@@ -1519,9 +1527,72 @@ arrastrándola a `/Applications` y el propio Finder da esa confirmación.
 
 **Flujo de autenticación:**
 1. El frontend React lee el token de `config.json` (o lo recibe del instalador/setup).
-2. Toda petición a `/api/*` debe incluir el header `X-Cronos-Agent-Token: <token>`.
+2. Toda petición de trabajo (`/api/print`, `/api/print/pdf`, `/api/printers`,
+   `/api/printers/queue`) debe incluir el header `X-Cronos-Agent-Token: <token>`.
 3. Si el header falta o no coincide, el agente responde `401 Unauthorized`.
-4. El endpoint `/health` está exento de autenticación.
+4. Los endpoints de descubrimiento `/health` y `/api/health` están exentos de
+   autenticación: son la superficie pública del agente (ver "Enrutador —
+   Superficie Pública y Superficie Protegida").
+
+## Enrutador — Superficie Pública y Superficie Protegida
+
+### El problema que resolvió
+
+El middleware de autenticación envolvía el mux completo y sólo dejaba pasar
+`/health` por una comparación de ruta escrita dentro del propio middleware. El
+frontend, sin embargo, descubre al agente con `GET /api/health` **antes** de
+tener ningún token que enviar (el usuario todavía no lo ha pegado en
+`Configuración → Impresora`), así que el botón "Detectar Agente Local" recibía
+un `401 Token ausente` de un agente que estaba perfectamente vivo en el 9100.
+
+### El enrutador
+
+`NewRouter()` ya no monta un único mux: construye dos superficies explícitas y
+las compone.
+
+| Función | Rutas | Auth |
+|---|---|---|
+| `newPublicMux()` | `GET /health`, `GET /api/health` | No |
+| `newProtectedMux()` | `GET /api/printers`, `GET /api/printers/queue`, `POST /api/print`, `POST /api/print/pdf` | Sí |
+
+```
+corsMiddleware                       (envuelve TODO el servidor)
+└── root  = newPublicMux()           /health, /api/health  →  sin token
+    └── "/api/"  →  authMiddleware(  newProtectedMux()  )  →  con token
+```
+
+El subárbol `/api/` se monta **entero** detrás del token, no ruta por ruta.
+`http.ServeMux` resuelve primero el patrón más específico, así que `/api/health`
+(patrón exacto) sigue cayendo en el handler público mientras `/api/print`,
+`/api/printers` y compañía caen en el mux protegido. La consecuencia buscada es
+que el enrutador es **fail-closed**: un endpoint `/api/` nuevo nace protegido
+aunque quien lo escriba no se acuerde de tocar esta sección.
+
+`authMiddleware` quedó limpio de rutas: ya no compara `r.URL.Path` contra nada.
+Es un guardián puro — token válido o `401` — y quién pasa por él lo decide el
+enrutador. Esa era la excepción que se había quedado corta al añadirse
+`/api/health` al agente.
+
+### CORS por encima de todo
+
+`corsMiddleware` envuelve la raíz, no el subárbol protegido, y por tanto también
+las rutas públicas. Es imprescindible: sin la cabecera
+`Access-Control-Allow-Origin` el navegador descarta la respuesta del ping de
+descubrimiento antes de que el frontend pueda leerla, y el resultado visible
+sería idéntico al del `401` original ("agente no detectado"). El preflight
+`OPTIONS` sigue respondiendo `204` a los orígenes de `config.json` y `403` a
+cualquier otro, health check incluido.
+
+### Contrato verificado (`server_test.go`)
+
+| Test | Comprueba |
+|---|---|
+| `TestPublicRoutesAnswerWithoutToken` | `/health` y `/api/health` responden `200` sin token, con `status: ok` y la versión del agente |
+| `TestProtectedRoutesRejectMissingOrWrongToken` | Las cuatro rutas de trabajo — y cualquier `/api/` no registrada — responden `401` sin token o con uno incorrecto |
+| `TestProtectedRoutesAcceptValidToken` | Con token válido la petición atraviesa el middleware (se usa el método HTTP equivocado a propósito: el `405` prueba que se alcanzó el handler sin mandar nada a una impresora real) |
+| `TestCORSWrapsPublicAndProtectedRoutes` | La cabecera `Access-Control-Allow-Origin` viaja también en las rutas públicas |
+| `TestCORSPreflightOnPublicHealth` | El preflight de `/api/health` responde `204` con `Access-Control-Allow-Headers` |
+| `TestCORSRejectsUnknownOrigin` | Un origen fuera de `config.json` recibe `403` y ninguna cabecera CORS |
 
 ## Endpoints HTTP
 
@@ -1530,7 +1601,7 @@ Base: `http://127.0.0.1:{port}` (puerto dinámico, default 9100)
 | Método | Ruta | Auth | Descripción |
 |---|---|---|---|
 | `GET` | `/health` | No | Health check básico (status, service, version) |
-| `GET` | `/api/health` | Si | Diagnóstico con uptime y uso de RAM |
+| `GET` | `/api/health` | **No** | Descubrimiento del agente: diagnóstico con versión, uptime y uso de RAM |
 | `GET` | `/api/printers` | Si | Lista impresoras instaladas en el SO |
 | `GET` | `/api/printers/queue` | Si | Cola de impresión de una impresora específica |
 | `POST` | `/api/print` | Si | Envía datos RAW (ESC/POS) a una impresora térmica |
@@ -1719,6 +1790,14 @@ ISCC.exe installer/setup.iss
 - ~~Limpieza del auto-arranque con `reg delete` + `runasoriginaluser` en vez de `--disable-autostart`, para no persistir `"autostart": false` en un `config.json` que ahora sobrevive~~ ✓
 - ~~Infraestructura de firma de código: `SignTool` y `SignedUninstaller` comentados, con el procedimiento de inyección del certificado documentado en los comentarios del `.iss`~~ ✓
 - ~~Comentarios del `.iss` unificados en inglés, explicando qué hace cada directiva y cómo se sostiene la garantía de preservación~~ ✓
+
+### Fase 13: Enrutador de Descubrimiento — Rutas Públicas y Protegidas ✓
+- ~~`GET /api/health` movido a la superficie pública: el frontend descubre al agente antes de tener token y ya no recibe `401`~~ ✓
+- ~~`NewRouter()` compone `newPublicMux()` (health) y `newProtectedMux()` (impresión y spooler) en vez de un único mux~~ ✓
+- ~~Subárbol `/api/` montado detrás del Auth: el enrutador es fail-closed y un endpoint nuevo nace protegido~~ ✓
+- ~~`authMiddleware` sin comparaciones de ruta: guardián puro, la política de acceso vive en el enrutador~~ ✓
+- ~~CORS confirmado por encima de todo el servidor, health check incluido (sin la cabecera el navegador bloquea el ping público)~~ ✓
+- ~~Suite `server_test.go` (6 tests): superficie pública sin token, `401` en las rutas de trabajo, token válido y CORS con orígenes permitidos y prohibidos~~ ✓
 
 ## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
 
