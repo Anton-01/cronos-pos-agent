@@ -49,12 +49,12 @@ func TestTranscodeCP1252(t *testing.T) {
 // "A" ASCII, que es lo único que imprime igual en toda tabla de caracteres,
 // tenga o no el hardware en cuenta la selección de página.
 func TestBuildPayloadFoldsAccentsOfTheAnimoCase(t *testing.T) {
-	got, err := BuildESCPOSPayload([]byte("Ánimo"), EncodingOptions{Transcode: true})
+	got, err := BuildESCPOSPayload([]byte("Ánimo"), DefaultEncodingOptions())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := []byte{0x1B, 0x74, 0x10, 'A', 'n', 'i', 'm', 'o'}
+	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x10, 'A', 'n', 'i', 'm', 'o'}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -123,18 +123,18 @@ func TestSanitizePayloadTextLeavesBinaryUntouched(t *testing.T) {
 // del comando cambia pero la transcodificación sigue siendo la de CP1252.
 func TestBuildPayloadSelectorOverride(t *testing.T) {
 	selector := byte(0x13)
-	got, err := BuildESCPOSPayload([]byte("¿Á?"), EncodingOptions{
-		CodePage:         "cp1252",
-		Transcode:        true,
-		SelectorOverride: &selector,
-	})
+	opts := DefaultEncodingOptions()
+	opts.CodePage = "cp1252"
+	opts.SelectorOverride = &selector
+
+	got, err := BuildESCPOSPayload([]byte("¿Á?"), opts)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
 	// La "Á" se pliega a "A" antes de codificar; la "¿" no lleva marca alguna,
 	// así que sigue el camino de siempre y viaja como 0xBF (CP1252).
-	want := []byte{0x1B, 0x74, 0x13, 0xBF, 'A', '?'}
+	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 0xBF, 'A', '?'}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -230,11 +230,14 @@ func TestGraphicsCommandLength(t *testing.T) {
 }
 
 func TestBuildPayloadPrependsCodePageCommand(t *testing.T) {
-	got, err := BuildESCPOSPayload([]byte("TOTAL"), EncodingOptions{CodePage: "cp850", Transcode: true})
+	opts := DefaultEncodingOptions()
+	opts.CodePage = "cp850"
+
+	got, err := BuildESCPOSPayload([]byte("TOTAL"), opts)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
-	want := append([]byte{0x1B, 0x74, 0x02}, []byte("TOTAL")...)
+	want := append([]byte{0x1B, 0x40, 0x1B, 0x74, 0x02}, []byte("TOTAL")...)
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -246,11 +249,15 @@ func TestBuildPayloadPrependsCodePageCommand(t *testing.T) {
 func TestBuildPayloadInsertsAfterInitialize(t *testing.T) {
 	input := append([]byte{0x1B, 0x40}, []byte("Café")...)
 
-	got, err := BuildESCPOSPayload(input, EncodingOptions{CodePage: "cp858", Transcode: true})
+	opts := DefaultEncodingOptions()
+	opts.CodePage = "cp858"
+
+	got, err := BuildESCPOSPayload(input, opts)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
+	// Un solo "ESC @": el del propio payload. El agente no añade el suyo.
 	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 'C', 'a', 'f', 'e'}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
@@ -261,7 +268,10 @@ func TestBuildPayloadRespectsExistingCodePageCommand(t *testing.T) {
 	// El frontend ya seleccionó su página: el agente no debe interferir.
 	input := []byte{0x1B, 0x74, 0x10, 'A', 0xC1}
 
-	got, err := BuildESCPOSPayload(input, EncodingOptions{CodePage: "cp850", Transcode: true})
+	opts := DefaultEncodingOptions()
+	opts.CodePage = "cp850"
+
+	got, err := BuildESCPOSPayload(input, opts)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -277,12 +287,16 @@ func TestBuildPayloadRespectsExistingCodePageCommand(t *testing.T) {
 func TestBuildPayloadWithoutTranscoding(t *testing.T) {
 	input := []byte("Á¿")
 
-	got, err := BuildESCPOSPayload(input, EncodingOptions{CodePage: "cp850", Transcode: false})
+	opts := DefaultEncodingOptions()
+	opts.CodePage = "cp850"
+	opts.Transcode = false
+
+	got, err := BuildESCPOSPayload(input, opts)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := append([]byte{0x1B, 0x74, 0x02, 'A'}, []byte("¿")...)
+	want := append([]byte{0x1B, 0x40, 0x1B, 0x74, 0x02, 'A'}, []byte("¿")...)
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -291,7 +305,10 @@ func TestBuildPayloadWithoutTranscoding(t *testing.T) {
 func TestBuildPayloadCodePageNoneIsPassthrough(t *testing.T) {
 	input := []byte("Ó")
 
-	got, err := BuildESCPOSPayload(input, EncodingOptions{CodePage: codePageNone, Transcode: true})
+	opts := DefaultEncodingOptions()
+	opts.CodePage = codePageNone
+
+	got, err := BuildESCPOSPayload(input, opts)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -339,11 +356,142 @@ func TestResolveCodePage(t *testing.T) {
 }
 
 func TestBuildPayloadEmptyInput(t *testing.T) {
-	got, err := BuildESCPOSPayload(nil, EncodingOptions{CodePage: "cp850", Transcode: true})
+	opts := DefaultEncodingOptions()
+	opts.CodePage = "cp850"
+
+	got, err := BuildESCPOSPayload(nil, opts)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("un payload vacío no debe generar comandos: % X", got)
+	}
+}
+
+// Con la configuración por defecto todo ticket abre con la pareja completa:
+// "ESC @" (reinicio) y "ESC t 16" (CP1252), en ese orden. Al revés el reinicio
+// borraría la selección de página y el ticket volvería a imprimir basura.
+func TestBuildPayloadEmitsInitializeAndCodePage(t *testing.T) {
+	got, err := BuildESCPOSPayload([]byte("TOTAL"), DefaultEncodingOptions())
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	want := append([]byte{0x1B, 0x40, 0x1B, 0x74, 0x10}, []byte("TOTAL")...)
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// Con strip_accents en false el pliegue de diacríticos no se aplica y el texto
+// llega al codificador con sus acentos: es lo que se quiere en una ticketera que
+// sí respeta el "ESC t n". La "ñ" y el "°" —el caso que salía como varios
+// símbolos basura— viajan como un solo byte de CP1252.
+func TestBuildPayloadWithoutStrippingAccents(t *testing.T) {
+	opts := DefaultEncodingOptions()
+	opts.StripAccents = false
+
+	got, err := BuildESCPOSPayload([]byte("Ñoño 20° €"), opts)
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	want := []byte{
+		0x1B, 0x40, 0x1B, 0x74, 0x10,
+		0xD1, 'o', 0xF1, 'o', ' ', '2', '0', 0xB0, ' ', 0x80,
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// El mismo texto con el pliegue activo (el valor por defecto): las eñes pierden
+// la virgulilla, y lo que no es una marca combinante —el grado y el euro— sigue
+// pasando por el codificador de la página de códigos.
+func TestBuildPayloadStripsAccentsButStillTranscodes(t *testing.T) {
+	got, err := BuildESCPOSPayload([]byte("Ñoño 20° €"), DefaultEncodingOptions())
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	want := []byte{
+		0x1B, 0x40, 0x1B, 0x74, 0x10,
+		'N', 'o', 'n', 'o', ' ', '2', '0', 0xB0, ' ', 0x80,
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// escpos_initialize=false deja fuera el "ESC @" sin tocar la selección de
+// página: es la válvula de escape para el frontend que gestiona el reinicio por
+// su cuenta a mitad de un flujo de varios tickets.
+func TestBuildPayloadWithoutInitialize(t *testing.T) {
+	opts := DefaultEncodingOptions()
+	opts.Initialize = false
+
+	got, err := BuildESCPOSPayload([]byte("TOTAL"), opts)
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	want := append([]byte{0x1B, 0x74, 0x10}, []byte("TOTAL")...)
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// El agente no duplica el reinicio: un payload que ya abre con varios "ESC @"
+// conserva los suyos y la selección de página entra detrás del último.
+func TestBuildPayloadDoesNotDuplicateInitialize(t *testing.T) {
+	input := append([]byte{0x1B, 0x40, 0x1B, 0x40}, []byte("OK")...)
+
+	got, err := BuildESCPOSPayload(input, DefaultEncodingOptions())
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	want := []byte{0x1B, 0x40, 0x1B, 0x40, 0x1B, 0x74, 0x10, 'O', 'K'}
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// Un carácter sin representación en la página activa no puede tumbar el ticket
+// ni imprimirse como basura: baja a su equivalente ASCII y, si no lo tiene, a
+// '?'. Sin pliegue de acentos previo, para que el que llegue al codificador sea
+// el texto original.
+func TestBuildPayloadReplacesUnmappableRunes(t *testing.T) {
+	opts := DefaultEncodingOptions()
+	opts.CodePage = "cp437"
+	opts.StripAccents = false
+
+	got, err := BuildESCPOSPayload([]byte("漢 ñ"), opts)
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	// CP437 no tiene el ideograma, que además no tiene equivalente ASCII en
+	// asciiFallback (-> '?'), pero sí la eñe minúscula (0xA4).
+	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x00, '?', ' ', 0xA4}
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// DefaultEncodingOptions es el punto de partida de todo constructor de opciones:
+// si alguno de estos valores dejara de ser el esperado, cambiaría en silencio lo
+// que se imprime en todas las cajas.
+func TestDefaultEncodingOptions(t *testing.T) {
+	opts := DefaultEncodingOptions()
+
+	if opts.CodePage != defaultCodePage {
+		t.Errorf("CodePage = %q, se esperaba %q", opts.CodePage, defaultCodePage)
+	}
+	if !opts.Transcode || !opts.StripAccents || !opts.Initialize {
+		t.Errorf("los tres tratamientos deben venir activos: %+v", opts)
+	}
+	if opts.SelectorOverride != nil {
+		t.Errorf("SelectorOverride = %v, se esperaba nil", *opts.SelectorOverride)
 	}
 }

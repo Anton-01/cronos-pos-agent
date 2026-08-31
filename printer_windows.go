@@ -51,20 +51,22 @@ func discoverPrinters() ([]PrinterInfo, error) {
 	return printers, nil
 }
 
-// rawPrint envía un ticket ESC/POS al spooler de Windows. Antes de escribir un
-// solo byte se prepara el payload con BuildESCPOSPayload, que abre SIEMPRE el
-// flujo de impresión con la selección de tabla de caracteres:
+// rawPrint sends an ESC/POS ticket to the Windows spooler. Before a single byte
+// is written, BuildESCPOSPayload prepares the payload so that the print stream
+// ALWAYS opens with the same two commands:
 //
-//	1B 74 10   ESC t 16 -> Code Page 1252 (Windows Latin-1), el valor por
-//	                      defecto desde la v1.5.0
+//	1B 40      ESC @    -> reset the printer to a known state
+//	1B 74 10   ESC t 16 -> Code Page 1252 (Windows Latin-1), the default
+//	                       since v1.5.0
 //
-// y transcodifica después el texto UTF-8 a los bytes de esa misma página. Sin
-// las dos cosas la ticketera interpreta cada byte del UTF-8 por separado contra
-// la tabla que tenga activa y las vocales acentuadas mayúsculas salen como
-// símbolos sueltos: es el fallo de "†nimo" en lugar de "Ánimo".
+// and then transcodes the UTF-8 text to the bytes of that very code page.
+// Without both halves the printer decodes every UTF-8 byte on its own against
+// whatever table it has active, and the accented capitals come out as loose
+// symbols: the "†nimo" failure instead of "Ánimo".
 //
-// El comando se inyecta detrás de un "ESC @" inicial si el payload lo trae,
-// porque ese comando reinicia la impresora y restauraría la página de fábrica.
+// The order matters: "ESC @" restores the factory code page, so the selection
+// goes behind it — including behind an "ESC @" the payload brings itself, in
+// which case no second reset is injected.
 func rawPrint(printerName string, data []byte, enc EncodingOptions) error {
 	payload, err := BuildESCPOSPayload(data, enc)
 	if err != nil {

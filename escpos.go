@@ -89,12 +89,38 @@ type EncodingOptions struct {
 	// Transcode indica si el texto UTF-8 debe convertirse a los bytes de la
 	// página de códigos. Si es false sólo se antepone el comando "ESC t n".
 	Transcode bool
+	// StripAccents folds the diacritics of the ticket text before it is
+	// encoded, so that "Ánimo" reaches the printer as "Animo". It is the
+	// fallback for the hardware that ignores the code page selection; turning
+	// it off keeps the real accented characters and leaves them to the
+	// transcoder, which is what a printer that honours "ESC t n" wants.
+	StripAccents bool
+	// Initialize prepends "ESC @" (printer reset) to the payload, so that every
+	// ticket starts from a known state and the code page selection that follows
+	// it cannot be undone by leftover state from the previous job. A payload
+	// that already opens with its own "ESC @" is left alone: no second reset is
+	// injected.
+	Initialize bool
 	// SelectorOverride sustituye el "n" de "ESC t n" por el valor indicado,
 	// manteniendo la tabla de transcodificación de CodePage. Es la válvula de
 	// escape para las ticketeras clónicas que numeran sus páginas de códigos
 	// de otra forma que el estándar de Epson: se ajusta en config.json sin
 	// recompilar el agente. nil = numeración estándar.
 	SelectorOverride *byte
+}
+
+// DefaultEncodingOptions returns the treatment applied to a ticket when the
+// agent has nothing configured: the default code page, transcoding on, accent
+// folding on and the printer reset on. Every caller that builds EncodingOptions
+// starts from here instead of from the zero value, so that a field added later
+// does not silently default to false in one of the call sites.
+func DefaultEncodingOptions() EncodingOptions {
+	return EncodingOptions{
+		CodePage:     defaultCodePage,
+		Transcode:    true,
+		StripAccents: true,
+		Initialize:   true,
+	}
 }
 
 // Selector devuelve el byte "n" que se enviará en "ESC t n" para esta página,
@@ -141,21 +167,23 @@ func SupportedCodePageNames() []string {
 	return append(names, codePageNone)
 }
 
-// BuildESCPOSPayload prepara los bytes definitivos que se escriben en la
-// impresora térmica:
+// BuildESCPOSPayload builds the definitive bytes written to the thermal printer:
 //
-//  1. Strips the diacritics of the ticket text, so that "Ánimo" travels to the
+//  1. Folds the diacritics of the ticket text, so that "Ánimo" travels to the
 //     printer as "Animo" (see sanitizeTextForPrinter). This is the fallback for
-//     the hardware that ignores the code page selection of step 3.
-//  2. Transcodifica el texto UTF-8 a los bytes de la página de códigos del
-//     hardware (¿ ¡ € º …), que de otro modo se imprimirían como pares de
-//     caracteres basura porque la ticketera interpreta cada byte UTF-8 por
-//     separado.
-//  3. Antepone el comando "ESC t n" para activar esa misma página de códigos
-//     en la impresora, respetando un "ESC @" inicial si el payload lo trae.
+//     the hardware that ignores the code page selection of step 4, and it is
+//     skipped when opts.StripAccents is false.
+//  2. Transcodes the UTF-8 text to the bytes of the printer's code page
+//     (¿ ¡ € º …), which would otherwise print as pairs of garbage characters
+//     because the printer decodes every UTF-8 byte on its own.
+//  3. Prepends "ESC @" (0x1B 0x40) to reset the printer, unless the payload
+//     already opens with one of its own or opts.Initialize is false.
+//  4. Prepends "ESC t n" to select that same code page on the printer, always
+//     behind the "ESC @" of step 3 — the reset restores the factory code page,
+//     so a selection placed before it would be undone.
 //
-// Si el payload ya contiene su propio "ESC t", se asume que el emisor gestiona
-// la codificación y los bytes se devuelven intactos.
+// If the payload already carries its own "ESC t", the emitter is assumed to
+// manage the encoding itself and the bytes are returned untouched.
 func BuildESCPOSPayload(data []byte, opts EncodingOptions) ([]byte, error) {
 	cp, active, err := ResolveCodePage(opts.CodePage)
 	if err != nil {
@@ -168,17 +196,19 @@ func BuildESCPOSPayload(data []byte, opts EncodingOptions) ([]byte, error) {
 		return data, nil
 	}
 
-	// Diacritics go first, and they go regardless of opts.Transcode: an accent
-	// that has already been folded into its base letter is plain ASCII, and
-	// plain ASCII is the one thing every code page —selected or ignored— prints
-	// the same way. Whatever survives the fold (¿ ¡ € º) is still worth
-	// transcoding, so both layers stay.
-	payload := sanitizePayloadText(data)
+	// Diacritics go first, because folding an accent into its base letter turns
+	// it into plain ASCII, and plain ASCII is the one thing every code page
+	// —selected or ignored— prints the same way. Whatever survives the fold
+	// (¿ ¡ € º) is still worth transcoding, so both layers stay.
+	payload := data
+	if opts.StripAccents {
+		payload = sanitizePayloadText(payload)
+	}
 	if opts.Transcode {
 		payload = transcodeToCodePage(payload, cp.Charmap)
 	}
 
-	return insertCodePageCommand(payload, opts.Selector(cp)), nil
+	return insertEncodingPreamble(payload, opts.Selector(cp), opts.Initialize), nil
 }
 
 // sanitizeTextForPrinter removes the diacritical marks of a string and keeps the
@@ -255,16 +285,31 @@ func hasCodePageCommand(data []byte) bool {
 	return false
 }
 
-// insertCodePageCommand inyecta "ESC t n" al principio del payload, pero por
-// detrás de los "ESC @" iniciales: ese comando reinicia la impresora y
-// restauraría la página de códigos de fábrica, anulando la selección.
-func insertCodePageCommand(data []byte, selector byte) []byte {
+// insertEncodingPreamble writes the two commands that every ticket must open
+// with —"ESC @" (reset) and "ESC t n" (code page selection)— at the head of the
+// payload, in that order.
+//
+// The order is not negotiable: "ESC @" restores the factory code page, so a
+// selection placed before it would be wiped out and the ticket would print
+// garbage again. That is also why the selection is injected BEHIND the leading
+// "ESC @" bytes the payload may already carry, instead of at offset 0.
+//
+// The reset is only added when the payload does not already open with one:
+// sending it twice would be harmless on paper, but a second reset in the middle
+// of what the frontend considers its own preamble is the kind of surprise that
+// is impossible to debug from a receipt. Pass initialize=false to leave the
+// reset out altogether (config key "escpos_initialize").
+func insertEncodingPreamble(data []byte, selector byte, initialize bool) []byte {
 	offset := 0
 	for offset+1 < len(data) && data[offset] == escInitialize[0] && data[offset+1] == escInitialize[1] {
 		offset += 2
 	}
 
-	command := []byte{escSelectCodeTable[0], escSelectCodeTable[1], selector}
+	command := make([]byte, 0, len(escInitialize)+len(escSelectCodeTable)+1)
+	if initialize && offset == 0 {
+		command = append(command, escInitialize...)
+	}
+	command = append(command, escSelectCodeTable[0], escSelectCodeTable[1], selector)
 
 	out := make([]byte, 0, len(data)+len(command))
 	out = append(out, data[:offset]...)

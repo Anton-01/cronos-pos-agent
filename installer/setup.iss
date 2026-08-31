@@ -27,7 +27,7 @@
 ; =============================================================================
 
 #define AppName "Cronos POS Agent"
-#define AppVersion "1.6.0"
+#define AppVersion "1.7.0"
 #define AppPublisher "Cronos SaaS"
 #define AppExeName "cronos-pos-agent.exe"
 #define AppFolderName "CronosAgent"
