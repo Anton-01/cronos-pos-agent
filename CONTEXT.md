@@ -2,7 +2,7 @@
 
 ## Estado Actual
 
-**Fase 12: Calidad Empresarial del Instalador** — Finalizado
+**Fase 13: Enrutador de Descubrimiento y Contrato de Impresión** — Finalizado (v1.8.0)
 
 Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código).
 
@@ -104,7 +104,7 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 cronos-pos-agent/
 ├── main.go              # Entry point: flags CLI, self-healing, reubicación, systray, goroutines
 ├── server.go            # Router (mux público + mux protegido), middlewares (CORS dinámico + Auth), handlers (6 endpoints)
-├── config.go            # Carga/generación de config.json, AgentVersion (1.7.0), migraciones de esquema
+├── config.go            # Carga/generación de config.json, AgentVersion (1.8.0), migraciones de esquema
 ├── network.go           # ResolvePort: fallback dinámico de puertos con scan
 ├── certs.go             # GenerateCerts: RSA 2048 + X.509 autofirmado nativo
 ├── logger.go            # RotatingLogger: escritura a archivo con rotación 10MB/3 backups
@@ -603,7 +603,7 @@ y añadirlas sería redundante.
 ### Instalación silenciosa por línea de comandos
 
 ```bash
-CronosAgentSetup-1.7.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+CronosAgentSetup-1.8.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 - `/VERYSILENT`: Sin interfaz gráfica
@@ -1704,7 +1704,24 @@ go run github.com/akavel/rsrc@v0.10.2 \        # rsrc_windows_amd64.syso (icono 
 ```
 
 El `.syso` embebe la versión declarada en `app.manifest`, así que hay que
-regenerarlo al subir de versión.
+regenerarlo al subir de versión. En la v1.8.0 se hizo: `app.manifest` pasó de
+`1.6.0.0` —se había quedado atrás en la v1.7.0— a `1.8.0.0`, y el `.syso` se
+regeneró con el comando de arriba. La salida de `rsrc` es determinista: el
+artefacto anterior se reproduce byte a byte desde su manifiesto, y el nuevo
+difiere en el único byte de la cadena de versión.
+
+### Subir de versión — los cuatro puntos
+
+La versión no vive en un único sitio, y tres de los cuatro puntos son
+silenciosos si se olvidan (el binario compila igual y el instalador se genera
+igual, sólo que mintiendo sobre su versión):
+
+| Punto | Archivo | Efecto si se olvida |
+|---|---|---|
+| `AgentVersion` | `config.go` | `/api/health` reporta la versión vieja y el panel del POS muestra "🟢 Agente Detectado" con el número anterior; el marcador `welcome-shown` no se invalida y la bienvenida no se vuelve a mostrar tras actualizar |
+| `#define AppVersion` | `installer/setup.iss` | `AppVersion` y el nombre del `.exe` de salida (`OutputBaseFilename`) se quedan atrás, y Windows ve la actualización como una reinstalación de la misma versión |
+| `version=` del `assemblyIdentity` | `app.manifest` | Las propiedades del ejecutable en el Explorador siguen mostrando la versión vieja |
+| `rsrc_windows_amd64.syso` | regenerado con `rsrc` | El `.exe` enlaza el manifiesto **anterior**: editar `app.manifest` sin regenerar el `.syso` no cambia nada en el binario |
 
 ### Pipeline completo de distribución Windows:
 
@@ -1717,9 +1734,9 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc \
 # 2. Generar instalador (ejecutar en Windows)
 ISCC.exe installer/setup.iss
 
-# 3. Resultado: installer/Output/CronosAgentSetup-1.7.0.exe
+# 3. Resultado: installer/Output/CronosAgentSetup-1.8.0.exe
 # 4. Despliegue silencioso en cajas de cobro:
-#    CronosAgentSetup-1.7.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+#    CronosAgentSetup-1.8.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 ## Fases — Historial Completo
@@ -1805,6 +1822,7 @@ ISCC.exe installer/setup.iss
 - ~~Suite `server_test.go` (6 tests): superficie pública sin token, `401` en las rutas de trabajo, token válido y CORS con orígenes permitidos y prohibidos~~ ✓
 - ~~`PDFPrintRequest.PrinterData` con etiqueta `json:"printer_data"`: los dos endpoints de impresión comparten vocabulario y `POST /api/print/pdf` deja de responder `400` a un cuerpo correcto~~ ✓
 - ~~Dos tests más (8 en total): decodificación del cuerpo del PDF y mensaje de validación homogéneo en `/api/print` y `/api/print/pdf`~~ ✓
+- ~~Versión 1.8.0 en los cuatro puntos: `AgentVersion`, `#define AppVersion` del instalador, `assemblyIdentity` de `app.manifest` (arrastraba `1.6.0.0`) y `rsrc_windows_amd64.syso` regenerado~~ ✓
 
 ## Ocultación Total de Consola en Windows — `CREATE_NO_WINDOW`
 
@@ -1879,7 +1897,7 @@ Content-Type: application/json
 | `printer_name` | `string` | Sí | Nombre de la impresora convencional en el SO |
 | `printer_data` | `string` | Sí | Documento PDF en Base64 |
 
-El campo del payload se llamaba `pdf_data` hasta la v1.7.0, mientras que el
+El campo del payload se llamaba `pdf_data` hasta la v1.7.0 inclusive, mientras que el
 frontend enviaba `printer_data` —el mismo nombre que usa `POST /api/print`— en
 los dos endpoints de impresión. El resultado era que **todo arqueo de caja
 enviado a imprimir moría en un `400`**: el `printer_data` del cuerpo no encajaba
