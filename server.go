@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"runtime"
@@ -86,6 +87,8 @@ func newProtectedMux() *http.ServeMux {
 	mux.HandleFunc("/api/printers/queue", handlePrinterQueue)
 	mux.HandleFunc("/api/print", handlePrint)
 	mux.HandleFunc("/api/print/pdf", handlePrintPDF)
+	mux.HandleFunc("/api/print/calibrate", handleCalibrate)
+	mux.HandleFunc("/api/print/calibrate/confirm", handleCalibrateConfirm)
 
 	return mux
 }
@@ -254,7 +257,7 @@ func handlePrint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	enc := EncodingOptionsFor(req.CodePage, req.Transcode)
+	enc := EncodingOptionsFor(req.PrinterName, req.CodePage, req.Transcode)
 
 	if err := rawPrint(req.PrinterName, rawBytes, enc); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -325,4 +328,146 @@ func handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"message": "PDF enviado a la impresora correctamente",
 	})
+}
+
+// handleCalibrate prints the accent calibration ticket on a printer and answers
+// with the list of numbered options it carries.
+//
+// It exists because ESC/POS is a one-way protocol as far as encoding goes: a
+// printer can be told to select a code page but never asked which one it has,
+// so the only way to establish what a given piece of hardware does with
+// "ESC t n" is to print every candidate and have a person read the paper. The
+// operator looks for the line where "ÁÉÍÓÚ" is printed as letters instead of
+// box-drawing symbols and sends its number to /api/print/calibrate/confirm.
+//
+// Nothing is saved here: printing the ticket changes no configuration, so
+// calibrating a printer twice is harmless.
+func handleCalibrate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req CalibrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "JSON inválido en el cuerpo de la petición", err)
+		return
+	}
+	if req.PrinterName == "" {
+		writeJSONError(w, http.StatusBadRequest, "El campo 'printer_name' es obligatorio", nil)
+		return
+	}
+
+	// The ticket carries its own "ESC t n" before every sample line — that is
+	// the whole point of it — so it is written to the spooler exactly as built,
+	// with the encoding pipeline disabled. Letting the agent re-encode it would
+	// mean measuring the agent instead of the printer.
+	if err := rawPrint(req.PrinterName, BuildCalibrationTicket(), EncodingOptions{CodePage: codePageNone}); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Error al imprimir el ticket de calibración", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":       "ok",
+		"message":      "Ticket de calibración enviado. Confirme el número de la línea correcta.",
+		"printer_name": req.PrinterName,
+		"options":      CalibrationOptions(),
+		"profile":      PrinterProfileFor(req.PrinterName),
+	})
+}
+
+// handleCalibrateConfirm stores the result the operator read off the calibration
+// ticket, which is what verifies a printer and unlocks the four characters
+// compatibility mode was folding (Á Í Ó Ú).
+//
+// Option 0 is the other useful answer: it says no line printed correctly, which
+// is a real outcome on a printer whose font ROM has no uppercase accented vowels
+// at all. It is stored as an unverified profile, leaving the printer in
+// compatibility mode for good — "Animo" is a worse ticket than "Ánimo" but a far
+// better one than "╡nimo".
+func handleCalibrateConfirm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req CalibrationConfirmRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "JSON inválido en el cuerpo de la petición", err)
+		return
+	}
+	if req.PrinterName == "" {
+		writeJSONError(w, http.StatusBadRequest, "El campo 'printer_name' es obligatorio", nil)
+		return
+	}
+
+	profile := PrinterProfile{
+		CodePage:   defaultCodePage,
+		CodePageID: req.CodePageID,
+		Verified:   false,
+		Source:     profileSourceCalibration,
+	}
+
+	if req.Option != 0 {
+		chosen, ok := calibrationOptionByNumber(req.Option)
+		if !ok {
+			writeJSONError(w, http.StatusBadRequest,
+				fmt.Sprintf("La opción %d no existe en el ticket de calibración", req.Option), nil)
+			return
+		}
+		profile.CodePage = chosen.CodePage
+		profile.Verified = true
+
+		// The line printed without any "ESC t n" is the one that identifies a
+		// printer ignoring the command. Its page is still the right one to
+		// encode against —it is what the firmware decodes with— so the profile
+		// records it and simply keeps sending the standard selector, which that
+		// printer will go on ignoring at no cost.
+		if chosen.Selector != nil && req.CodePageID == nil {
+			profile.CodePageID = chosen.Selector
+		}
+	}
+
+	if err := SavePrinterProfile(req.PrinterName, profile); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "No se pudo guardar el perfil de la impresora", err)
+		return
+	}
+
+	message := "Impresora verificada: se imprimirán todos los acentos."
+	if !profile.Verified {
+		message = "Impresora sin página de códigos utilizable: se mantiene el modo compatible (Á Í Ó Ú se imprimirán sin acento)."
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":       "ok",
+		"message":      message,
+		"printer_name": req.PrinterName,
+		"profile":      profile,
+	})
+}
+
+// calibrationOptionByNumber looks up one line of the calibration ticket by the
+// number printed next to it.
+func calibrationOptionByNumber(option int) (CalibrationOption, bool) {
+	for _, candidate := range CalibrationOptions() {
+		if candidate.Option == option {
+			return candidate, true
+		}
+	}
+	return CalibrationOption{}, false
+}
+
+// writeJSONError answers with the {"error", "details"} shape every handler in
+// this file uses, so that a new endpoint cannot drift into its own.
+func writeJSONError(w http.ResponseWriter, status int, message string, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	body := map[string]string{"error": message}
+	if err != nil {
+		body["details"] = err.Error()
+	}
+	json.NewEncoder(w).Encode(body)
 }

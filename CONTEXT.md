@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 13: Enrutador de Descubrimiento y Contrato de Impresión** — Finalizado (v1.8.0)
+**Fase 14: Codificación Robusta de Acentos — Modo Compatible y Calibración** — Finalizado (v1.9.0)
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código), 13 (Enrutador de descubrimiento público y contrato de impresión), 14 (Modo compatible de codificación, perfiles por impresora y ticket de calibración de acentos).
 
 **Añadido después de la Fase 12:**
 
@@ -36,6 +36,25 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
   endpoints de impresión, y la etiqueta divergente del struct hacía que cada
   arqueo de caja recibiera un `400`. Ver "Endpoint `POST /api/print/pdf` —
   Detalle Técnico".
+- **Modo compatible de codificación** (v1.9.0, `escpos_compatibility`, default
+  `true`): el ticket se restringe a los caracteres que PC437, PC850 y PC858
+  codifican con **el mismo byte**, de modo que da igual qué tabla tenga activa la
+  impresora. En español eso es todo menos `Á Í Ó Ú`, que se pliegan a ASCII. Un
+  ticket deja de poder imprimir basura en cualquier hardware, y `Michoacán`
+  conserva su acento en vez de salir `Michoacan`. Ver "Modo Compatible".
+- **Página por defecto de vuelta a PC858** (v1.9.0): CP1252 resultó ser la peor
+  opción cuando la impresora ignora el `ESC t n` —no comparte ni un byte con
+  PC437, así que se pierden *todos* los acentos y no sólo los cuatro
+  conflictivos—. Ver "Por qué PC858 y no CP1252".
+- **Perfiles por impresora y ticket de calibración** (v1.9.0, `printers` en
+  `config.json`, `POST /api/print/calibrate`): ESC/POS no tiene ninguna orden
+  para preguntarle a una impresora qué tabla decodifica, así que el agente
+  imprime un ticket con todos los candidatos numerados y el operador devuelve el
+  número de la línea correcta. Una impresora verificada desactiva el pliegue y
+  recupera `Á Í Ó Ú`. Ver "Calibración de Acentos".
+- **Reafirmación de la página tras cada `ESC @`** (v1.9.0): un reinicio a mitad
+  de ticket restauraba la página de fábrica y todo lo impreso después salía con
+  la tabla equivocada. Ahora la selección se reinyecta detrás de cada `ESC @`.
 - **Enrutador partido en superficie pública y superficie protegida**: el
   descubrimiento (`GET /health` y `GET /api/health`) responde sin token, y el
   resto de `/api/` se monta detrás del Auth como un subárbol fail-closed. CORS
@@ -77,12 +96,14 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Datos de runtime (Win) | `%LOCALAPPDATA%\CronosAgent\` | Program Files es de sólo lectura para el usuario estándar que ejecuta el agente |
 | Codificación ESC/POS | `ESC t n` + transcodificación UTF-8 → página de códigos | Las ticketeras no entienden UTF-8; CP437 (fábrica) ni siquiera contiene Á Í Ó Ú |
 | Preámbulo del ticket | `ESC @` (`1B 40`) + `ESC t n`, en ese orden | El reinicio deja la impresora en un estado conocido; va **antes** de la selección porque `ESC @` restaura la página de fábrica y anularía una selección previa |
-| Pliegue de acentos | Conmutable con `strip_accents` (default `true`) | Es un fallback, no una verdad universal: en el hardware que respeta el `ESC t n` conviene apagarlo e imprimir la `ñ` de verdad |
+| Pliegue total de acentos | Conmutable con `strip_accents` (default `false` desde la v1.9.0) | Sacrificaba la `á` de `Michoacán` para no equivocar la `Á` de `Ánimo`. Lo sustituye el modo compatible, que sólo pliega lo que la impresora puede equivocar |
+| Modo compatible | `escpos_compatibility` (default `true`) | El agente no puede saber qué tabla tiene activa la impresora, así que emite sólo los bytes en los que PC437, PC850 y PC858 coinciden. Es correcto en cualquier hardware sin configurar nada |
+| Perfil por impresora | `printers` en `config.json` + `POST /api/print/calibrate` | La página de códigos es una propiedad del hardware, no de la instalación: una caja con dos ticketeras necesita dos respuestas. Verificar una desbloquea `Á Í Ó Ú` |
 | Valores por defecto de codificación | `DefaultEncodingOptions()` | Un único punto de partida para config, API y tests: un campo nuevo no puede quedarse en `false` por olvido en un constructor |
-| Página por defecto | **CP1252** (`ESC t 16` = `1B 74 10`) desde la v1.5.0 | Sus bytes son los de Latin-1, que es lo que espera una ticketera conectada a Windows. Con CP850 la `Á` viaja como `0xB5` y sale como otro símbolo en cuanto el hardware pierde la selección de página |
+| Página por defecto | **PC858** (`ESC t 19` = `1B 74 13`) desde la v1.9.0 | Comparte con PC437 —la página de fábrica— el byte de todos los acentos del español menos cuatro. CP1252 (v1.5.0–v1.8.0) no comparte ninguno: cuando la impresora ignora la selección, falla el ticket entero en vez de cuatro caracteres |
 | Numeración de páginas | `escpos_code_page_id` en `config.json` | Válvula de escape para clones que numeran sus tablas fuera del estándar Epson, sin recompilar |
 | Tablas de códigos | `golang.org/x/text/encoding/charmap` | Implementación de referencia del proyecto Go: ~800 líneas de tablas propias sustituidas por cuatro alias que nadie tiene que revisar |
-| Transcodificación | `charmap.Windows1252.NewEncoder().Bytes()` por tramo de texto | Un ticket RAW no es una cadena: sólo se codifican los tramos de texto, no los comandos ni los logos |
+| Transcodificación | `charmap.CodePage858.NewEncoder().Bytes()` por tramo de texto | Un ticket RAW no es una cadena: sólo se codifican los tramos de texto, no los comandos ni los logos |
 | Acentos (fallback) | NFD + descarte de la categoría `Mn` (`golang.org/x/text/unicode/norm` + `unicode`) | Parte del hardware ignora el `ESC t n`: una `A` sin tilde es el único byte que imprime igual en cualquier tabla |
 | Icono del agente | `//go:embed app_icon.ico` + `systray.SetIcon` | El binario se sobrescribe en cada actualización: un icono en archivo suelto se perdería |
 | Estado en la bandeja | Icono gris → verde tras `net.Listen` | El color confirma que el socket acepta conexiones, no que se haya lanzado una goroutine |
@@ -115,7 +136,11 @@ cronos-pos-agent/
 ├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
 ├── escpos.go            # Motor de codificación: pliegue de diacríticos (NFD), preámbulo ESC @ + ESC t n, encoder charmap y salto de gráficos
 ├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
-├── escpos_test.go       # Tests del motor de codificación (27 casos)
+├── escpos_compat.go     # Modo compatible: subconjunto seguro PC437 ∩ PC850 ∩ PC858 y pliegue selectivo
+├── printer_profiles.go  # Perfiles por impresora, modelos conocidos y ticket de calibración
+├── escpos_test.go       # Tests del motor de codificación
+├── escpos_compat_test.go # Tests del modo compatible y de la reafirmación de página
+├── printer_profiles_test.go # Tests de perfiles, modelos conocidos y ticket de calibración
 ├── server_test.go       # Tests del enrutador: superficie pública sin token, /api/ protegido, CORS y contrato de los endpoints de impresión
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
@@ -181,24 +206,36 @@ con el POS (ver "Desinstalación — política de preservación de estado").
   ],
   "update_url": "https://pos-app.tech/agent/version.json",
   "port": 9100,
-  "escpos_code_page": "cp1252",
+  "escpos_code_page": "cp858",
   "escpos_transcode": true,
-  "strip_accents": true,
+  "strip_accents": false,
+  "escpos_compatibility": true,
   "escpos_initialize": true,
+  "printers": {
+    "EPSON TM-T20III Receipt": {
+      "code_page": "cp858",
+      "code_page_id": 19,
+      "verified": true,
+      "source": "calibration",
+      "updated_at": "2026-09-18T13:08:51Z"
+    }
+  },
   "autostart": true
 }
 ```
 
 | Propiedad | Tipo | Default | Descripción |
 |---|---|---|---|
-| `config_version` | `int` | `2` | Versión del **esquema** del archivo (no la del agente). Dispara las migraciones una sola vez |
+| `config_version` | `int` | `3` | Versión del **esquema** del archivo (no la del agente). Dispara las migraciones una sola vez |
 | `api_token` | `string` | UUID v4 auto | Token de autenticación para header `X-Cronos-Agent-Token` |
 | `allowed_origins` | `string[]` | 5 orígenes | Lista de orígenes CORS permitidos |
 | `update_url` | `string` | pos-app.tech | URL del JSON de versión para auto-updates |
 | `port` | `int` | `9100` | Puerto preferido. Si está ocupado, busca el siguiente libre (9101–9110) |
-| `escpos_code_page` | `string` | `"cp1252"` | Página de códigos que se activa en la ticketera: `cp1252`, `cp850`, `cp858`, `cp437` o `none` |
+| `escpos_code_page` | `string` | `"cp858"` | Página de códigos que se activa en la ticketera: `cp858`, `cp850`, `cp1252`, `cp437`, `auto` (alias de `cp858`) o `none` |
 | `escpos_transcode` | `bool` | `true` | Convierte el texto UTF-8 a los bytes de esa página de códigos con el encoder de `charmap` |
-| `strip_accents` | `bool` | `true` | Pliega los diacríticos antes de codificar (`Ánimo` → `Animo`). Es el fallback para el hardware que ignora el `ESC t n`; en `false` los acentos se imprimen de verdad |
+| `strip_accents` | `bool` | `false` | Pliega **todos** los diacríticos antes de codificar (`Ánimo` → `Animo`, `Michoacán` → `Michoacan`). Desde la v1.9.0 lo sustituye el modo compatible; queda para la impresora que no imprima bien ni siquiera el subconjunto seguro |
+| `escpos_compatibility` | `bool` | `true` | Restringe el ticket a los bytes en los que PC437, PC850 y PC858 coinciden, plegando a ASCII los cuatro que no (`Á Í Ó Ú`). Se apaga solo en las impresoras con perfil verificado. Ver "Modo Compatible" |
+| `printers` | `object` | ausente | Lo que el agente sabe de cada impresora: `{"<nombre de la cola>": {"code_page", "code_page_id", "verified", "source", "updated_at"}}`. Lo escribe la calibración. Ver "Calibración de Acentos" |
 | `escpos_initialize` | `bool` | `true` | Antepone `ESC @` (`1B 40`) a cada trabajo RAW. En `false` sólo se envía el `ESC t n` |
 | `escpos_code_page_id` | `int` | ausente | Sustituye el `n` de `ESC t n` por un valor concreto (0–255) manteniendo la tabla de `escpos_code_page`. Sólo para ticketeras con numeración propia |
 | `autostart` | `bool` | `true` | Preferencia de arranque con el sistema. El agente sólo repara la entrada del registro si es `true` |
@@ -228,9 +265,12 @@ intacto el `api_token`.
 | Migración | Qué hace | Por qué |
 |---|---|---|
 | v1 → v2 | `escpos_code_page: "cp850"` → `"cp1252"` | Ese `cp850` no lo eligió ningún operador: lo escribió el propio agente como valor por defecto en su primer arranque. Sin la migración, las cajas ya instaladas seguirían imprimiendo los acentos mal tras actualizar |
+| v2 → v3 | `escpos_code_page: "cp850"` o `"cp1252"` → `"cp858"`; `strip_accents: true` → `false`; se añade `escpos_compatibility: true` | CP1252 no comparte ni un byte con PC437, así que en la impresora que ignora el `ESC t n` fallan *todos* los acentos. PC858 más el modo compatible falla en ninguno, y el pliegue total deja de ser necesario |
 
-Una página **distinta** de `cp850` (por ejemplo `cp858`, `cp437` o `none`) sí es
-una decisión deliberada del integrador y se respeta.
+La regla de toda migración es la misma: **sólo se toca el valor que escribió el
+propio agente como defecto de su época**. Una página distinta de ésas (por
+ejemplo `cp437` o `none`), o un `strip_accents` puesto a mano en un archivo que
+ya era del esquema v3, lo decidió una persona mirando un ticket y se respeta.
 
 ## Conmutación Dinámica de Puertos
 
@@ -799,6 +839,58 @@ Peor aún: la página de fábrica de la práctica totalidad de las ticketeras es
 `Á`, `Í`, `Ó` y `Ú` no existen en esa tabla, así que no hay byte que enviar —
 sólo cambiar de página de códigos resuelve el caso.
 
+### Por qué no basta con seleccionar la página
+
+Para que un acento llegue intacto al papel tienen que coincidir **tres cosas**, y
+el agente sólo controla la primera:
+
+1. los bytes que el agente escribe en el spooler,
+2. la tabla que el firmware tiene activa cuando los decodifica,
+3. los glifos que la ROM de fuentes de la impresora contiene de verdad.
+
+`ESC t n` es una **petición, no un contrato**. Buena parte del hardware del
+mercado la ignora, la numera de otra forma que el estándar de Epson, o
+sencillamente no tiene más tabla que la PC437 con la que arrancó. En esas
+impresoras no existe ningún byte que imprima `Á`, y ninguna astucia con páginas
+de códigos lo arregla.
+
+**El caso real (ticket del 18/09/2026).** El ticket salió con
+`╡nimo, ya falta menos para navidad` y, tres líneas más arriba, con
+`Chapultepec Sur, Morelia, Michoacán` **perfecta**. Esa asimetría identifica el
+fallo sin ambigüedad:
+
+| | `Á` | `á` |
+|---|---|---|
+| Byte que envió el agente (CP850) | `0xB5` | `0xA0` |
+| Glifo en PC850 / PC858 | `Á` | `á` |
+| Glifo en **PC437** | **`╡`** | `á` |
+
+Es decir: el agente codificaba en CP850 y la impresora decodificaba en PC437.
+Las dos tablas coinciden en la `á` minúscula (`0xA0` en ambas) y difieren en la
+`Á` mayúscula, que PC437 ni siquiera contiene. De ahí que sólo fallaran las
+mayúsculas acentuadas.
+
+### La observación que resuelve el caso
+
+PC437, PC850 y PC858 —las tres tablas que cubren todo el parque instalado de
+ESC/POS— **no difieren en todas partes**. Asignan el mismo byte a 81 de los
+caracteres por encima del ASCII, y entre ellos está casi todo lo que el español
+necesita:
+
+```
+á A0   é 82   í A1   ó A2   ú A3   ü 81   ñ A4
+Ñ A5   É 90   Ü 9A   ¿ A8   ¡ AD   º A7   ª A6   ° F8
+```
+
+Para ese subconjunto **la selección de página es irrelevante**: tenga la
+impresora la tabla que tenga, el byte decodifica al mismo glifo. En español las
+tres tablas sólo discrepan en **cuatro caracteres** —`Á`, `Í`, `Ó`, `Ú`—, que
+PC437 no contiene y cuyos bytes de PC850 (`B5`, `D6`, `E0`, `E9`) caen sobre los
+caracteres de dibujo `╡ ╓ α ┘`.
+
+Todo el modo compatible se construye sobre esa observación: **el problema
+completo de los acentos en español se reduce a cuatro caracteres.**
+
 ### La solución — cuatro mecanismos encadenados
 
 Implementados en `escpos.go` y aplicados dentro de `rawPrint()` en
@@ -807,10 +899,14 @@ byte en el spooler. `BuildESCPOSPayload()` los aplica en este orden:
 
 | # | Mecanismo | Qué hace | Conmutable con |
 |---|---|---|---|
-| 1 | **Pliegue de diacríticos** (`sanitizeTextForPrinter`) | `Á` → `A`. Es el fallback: funciona incluso si la impresora ignora el paso 4 | `strip_accents` |
-| 2 | Transcodificación (`transcodeToCodePage`) | Lo que sobrevive al pliegue y no es ASCII (`¿ ¡ € º`) se lleva a los bytes de la página, con el encoder de `charmap` | `escpos_transcode` |
-| 3 | Reinicio (`ESC @`) | Deja la impresora en un estado conocido antes de seleccionar la página | `escpos_initialize` |
-| 4 | Selección de página (`ESC t n`) | Activa esa misma página en el hardware | `escpos_code_page` |
+| 1 | **Pliegue total de diacríticos** (`sanitizeTextForPrinter`) | `Á` → `A` y `Michoacán` → `Michoacan`. El martillo: funciona hasta en la impresora que sólo imprime ASCII | `strip_accents` (default `false`) |
+| 2 | **Modo compatible** (`foldPayloadToUniversalSafe`) | Pliega **sólo** `Á Í Ó Ú` y deja intacto todo lo que PC437, PC850 y PC858 codifican igual. Fija además la página en PC858 | `escpos_compatibility` (default `true`) |
+| 3 | Transcodificación (`transcodeToCodePage`) | Lo que sobrevive al pliegue y no es ASCII (`¿ ¡ ñ º`) se lleva a los bytes de la página, con el encoder de `charmap` | `escpos_transcode` |
+| 4 | Reinicio (`ESC @`) | Deja la impresora en un estado conocido antes de seleccionar la página | `escpos_initialize` |
+| 5 | Selección de página (`ESC t n`) | Activa esa misma página en el hardware, en la cabecera **y detrás de cada `ESC @` posterior** | `escpos_code_page` |
+
+Los pasos 1 y 2 son excluyentes: si el pliegue total está activo, el modo
+compatible no tiene nada que hacer.
 
 Los pasos 3 y 4 se escriben en la cabecera en ese orden —`1B 40` y después
 `1B 74 n`—, que es el único que funciona: ver "Preámbulo de todo ticket".
@@ -822,15 +918,15 @@ soporte completo de español:
 
 | Página | Comando | Bytes | Cobertura |
 |---|---|---|---|
-| **CP1252** (por defecto desde la v1.5.0) | `ESC t 16` | `1B 74 10` | Windows Latin-1: Á É Í Ó Ú Ñ ñ Ü ü ¿ ¡ € |
+| **CP858** (por defecto desde la v1.9.0) | `ESC t 19` | `1B 74 13` | CP850 + símbolo €. Comparte con PC437 el byte de todos los acentos del español menos `Á Í Ó Ú` |
 | CP850 | `ESC t 2` | `1B 74 02` | Multilingual Latin-1 (por defecto hasta la v1.4.0) |
-| CP858 | `ESC t 19` | `1B 74 13` | CP850 + símbolo € |
+| CP1252 | `ESC t 16` | `1B 74 10` | Windows Latin-1 (por defecto de la v1.5.0 a la v1.8.0). **No comparte ningún byte con PC437**: ver "Por qué PC858 y no CP1252" |
 | CP437 | `ESC t 0` | `1B 74 00` | USA/Standard Europe (página de fábrica) |
 | `none` | — | — | Desactiva todo el tratamiento: los bytes viajan tal cual |
 
 > **Ojo con `1B 74 13`.** En la tabla estándar de Epson —la que respetan
-> prácticamente todos los clones— `n = 19` (`0x13`) es **PC858**, no CP1252.
-> CP1252 es `n = 16` (`0x10`), que es lo que envía el agente. Ambas páginas
+> prácticamente todos los clones— `n = 19` (`0x13`) es **PC858**, que es lo que
+> envía el agente desde la v1.9.0. CP1252 es `n = 16` (`0x10`). Las dos páginas
 > imprimen bien los acentos del español, pero colocan los caracteres en bytes
 > distintos, así que enviar `0x13` mientras se transcodifica a CP1252 imprimiría
 > basura. Si un modelo concreto numera sus tablas de otra forma, se corrige con
@@ -875,7 +971,135 @@ impresora que arranca en su tabla de fábrica— hacía que el `ESC t n` fuese l
 única línea de defensa. Abriendo con `ESC @` el ticket no depende de lo que
 hiciera el trabajo anterior: se reinicia, se selecciona la página y se imprime.
 
-**2. Transcodificación UTF-8 → bytes de la página de códigos (encoder Windows-1252)**
+### Por qué PC858 y no CP1252
+
+De la v1.5.0 a la v1.8.0 el valor por defecto fue CP1252, con el argumento de que
+sus bytes son los de Latin-1, que es lo que "espera" una ticketera colgada de un
+equipo Windows. El campo lo desmintió: el agente escribe bytes **RAW**
+directamente en el spooler, así que ningún driver de Windows los traduce nunca, y
+una impresora que ignora el `ESC t 16` sigue decodificando en PC437.
+
+Bajo ese fallo —que es el común— CP1252 es la peor de las cuatro opciones:
+
+| El agente codifica en | La impresora decodifica en PC437 | Resultado |
+|---|---|---|
+| **CP1252** | `á` = `0xE1` → `ß`, `Á` = `0xC1` → `┴` | `Michoacßn`, `┴nimo` — **falla el ticket entero** |
+| **CP850 / PC858** | `á` = `0xA0` → `á`, `Á` = `0xB5` → `╡` | `Michoacán`, `╡nimo` — fallan **cuatro caracteres** |
+| **PC858 + modo compatible** | `á` = `0xA0` → `á`, `Á` → `A` | `Michoacán`, `Animo` — **no falla nada** |
+
+PC858 comparte con PC437 el byte de todos los acentos del español menos cuatro;
+CP1252 no comparte ninguno. Elegir la página que *más se parece* a la de fábrica
+reduce la superficie del fallo antes incluso de plegar nada.
+
+### Modo Compatible — `escpos_compatibility`
+
+Implementado en **`escpos_compat.go`**. Es el mecanismo que hace que un ticket sea
+correcto en una impresora de la que no se sabe nada.
+
+**Cómo funciona.** El subconjunto seguro no está escrito a mano: se calcula al
+arrancar recorriendo el rango `0x80–0xFF` de los tres charmaps y quedándose con
+los bytes que decodifican a la **misma runa** en los tres
+(`buildUniversalSafeRunes`). Añadir una página a `compatibilityPages` recalcula el
+subconjunto en vez de obligar a revisar 81 entradas a mano.
+
+Después, `foldToUniversalSafe` recorre el texto del ticket:
+
+- runa en el subconjunto seguro (`á é í ó ú ü ñ Ñ É Ü ¿ ¡ º ª °`) → **se conserva
+  tal cual**, con su acento;
+- runa fuera de él (`Á Í Ó Ú €`) → baja a su equivalente ASCII (`asciiFallback`:
+  `Á`→`A`, `€`→`EUR`), y si no lo tiene, a su letra base sin diacrítico, y en
+  último extremo a `?`.
+
+El modo **fija además la página en PC858**, porque el subconjunto está definido
+contra los bytes de la familia DOS: respetar una configuración `cp1252` aquí
+dejaría el pliegue pagando por una garantía que ya no da. Una instalación que
+quiera CP1252 de verdad apaga el modo (`"escpos_compatibility": false`) o
+verifica la impresora.
+
+**La propiedad que se obtiene** —y que fija el test
+`TestTicketReadsTheSameOnEveryPrinterPage`— es que el mismo payload, leído con
+cualquiera de las tres tablas, dice exactamente lo mismo:
+
+```
+--- La impresora decodifica en PC437 ---
+  ANTES : ╡nimo, ya falta menos para navidad / Michoacán / ¿Cuánto? ¡αrale! 20°
+  AHORA : Animo, ya falta menos para navidad / Michoacán / ¿Cuánto? ¡Orale! 20°
+
+--- La impresora decodifica en PC850 / PC858 ---
+  ANTES : Ánimo, ya falta menos para navidad / Michoacán / ¿Cuánto? ¡Órale! 20°
+  AHORA : Animo, ya falta menos para navidad / Michoacán / ¿Cuánto? ¡Orale! 20°
+```
+
+El coste es explícito y acotado: **cuatro caracteres pierden su acento mientras
+la impresora no esté verificada**. A cambio, el ticket no puede imprimir basura
+en ningún hardware, sin configurar nada y sin conocer el modelo.
+
+### Calibración de Acentos — recuperar `Á Í Ó Ú`
+
+Implementada en **`printer_profiles.go`**. ESC/POS es de sentido único en lo que
+a codificación respecta: se le puede *ordenar* a una impresora que seleccione una
+página, pero **no existe ninguna orden para preguntarle cuál tiene activa**. La
+única forma de establecer qué hace un hardware concreto con el `ESC t n` es
+imprimir todos los candidatos y que una persona lea el papel.
+
+```
+POST /api/print/calibrate          { "printer_name": "POS-80" }
+POST /api/print/calibrate/confirm  { "printer_name": "POS-80", "option": 3 }
+```
+
+El ticket de prueba (`BuildCalibrationTicket`) imprime la misma cadena de
+referencia —`ÁÉÍÓÚ ÜÑ ¿¡ áéíóú üñ`— una vez por candidato, numerada y precedida
+de su propio `ESC t n`:
+
+| Opción | Qué imprime |
+|---|---|
+| `[1]` | **Sin `ESC t` ninguno**: revela qué hace la impresora con la tabla que arrancó, que es el dato que falta cuando el hardware ignora la selección |
+| `[2]`–`[5]` | Una por página soportada, con su numeración estándar de Epson |
+
+El operador busca la línea donde `ÁÉÍÓÚ` sale como letras y no como símbolos de
+dibujo, y devuelve ese número. El agente guarda entonces un **perfil verificado**
+en `config.json`, y a partir de ahí esa impresora deja de plegar los cuatro
+caracteres. `option: 0` es la otra respuesta útil —"ninguna línea es correcta"—,
+que es un resultado real en una impresora cuya ROM no tiene vocales acentuadas
+mayúsculas: se guarda como perfil no verificado y la deja en modo compatible para
+siempre.
+
+Todo el texto de instrucciones del ticket es ASCII puro a propósito: tiene que
+leerse incluso en la impresora que falla todos los candidatos, que es justo la
+que más lo necesita.
+
+**Modelos conocidos.** Un nombre de cola que coincide con `knownPrinterModels`
+(Epson TM, Bixolon SRP, Star TSP/mC) se da por verificado sin calibrar. La lista
+es corta y conservadora a propósito: un nombre es evidencia débil —una cola
+llamada `POS-58` no dice nada del firmware que hay detrás—, y sólo entra ahí el
+fabricante que publica su juego de comandos ESC/POS. Equivocarse por prudencia
+cuesta cuatro caracteres plegados; equivocarse al revés cuesta un ticket que el
+cliente no puede leer.
+
+**Orden de autoridad.** `EncodingOptionsFor` combina cuatro fuentes, de menor a
+mayor: valores por defecto → `config.json` → **perfil de esa impresora** →
+campos de la petición. El perfil manda sobre la configuración global porque la
+página de códigos es una propiedad del hardware: una caja con una Epson en el
+mostrador y una clónica en la cocina necesita dos respuestas distintas, y una
+sola clave global es necesariamente incorrecta para una de las dos.
+
+### Reafirmación de la página tras cada `ESC @`
+
+`ESC @` devuelve la impresora a su estado de encendido, y eso incluye la tabla de
+caracteres: todo lo impreso después decodifica contra la página de fábrica, dé
+igual lo que se hubiera seleccionado antes. Un frontend que abre cada sección
+lógica del ticket con su propio reinicio —una forma común de asegurarse de que el
+logo, el cuerpo y el pie parten de un estado conocido— imprimía la primera
+sección con acentos y el resto sin ellos.
+
+`reassertAfterResets` reinyecta `ESC t n` detrás de **cada** `ESC @` del payload.
+Tres bytes por reinicio cierran todo ese modo de fallo. Un reinicio que ya trae su
+propia selección se deja intacto, y los bloques gráficos se saltan con
+`graphicsCommandLength`: dos bytes de un logo pueden valer `1B 40` por
+casualidad, e inyectar un comando dentro de una imagen corrompería el resto del
+ticket.
+
+**2. Transcodificación UTF-8 → bytes de la página de códigos (encoder CP858)**
 
 Éste es el mecanismo que de verdad arregla los acentos, y el motivo por el que
 el prefijo `ESC t n` por sí solo no bastaba: **el texto llega al agente en
@@ -887,7 +1111,7 @@ Desde la Fase 11 esa conversión la hace el codificador oficial de
 `golang.org/x/text/encoding/charmap`, no una tabla mantenida a mano:
 
 ```go
-encoder := charmap.Windows1252.NewEncoder()
+encoder := charmap.CodePage858.NewEncoder()
 encodedBytes, err := encoder.Bytes(textoDelTicket)   // "Á" -> 0xC1
 ```
 
@@ -1170,12 +1394,15 @@ return insertEncodingPreamble(payload, opts.Selector(cp), opts.Initialize), nil
   traducción a la página de códigos; el pliegue es la capa que tiene que
   funcionar *sobre todo* cuando la página no se aplica, así que se ejecuta igual
   con `"escpos_transcode": false`.
-- **Tiene su propio interruptor: `strip_accents`** (default `true`). Es un
-  fallback, no una verdad universal: en una ticketera que sí respeta el
-  `ESC t n` el pliegue está de más y cuesta las eñes. Con
-  `"strip_accents": false` el texto llega al codificador con sus acentos y
-  `Ñoño 20° €` sale como `D1 6F F1 6F 20 32 30 B0 20 80` en CP1252 —un byte por
-  carácter— en vez de plegado a `Nono`. Es el interruptor que se toca cuando el
+- **Tiene su propio interruptor: `strip_accents`** (default `false` desde la
+  v1.9.0). Es un fallback, no una verdad universal, y además uno demasiado
+  caro: pliega también la `á` de `Michoacán` y la `ñ` de `niño`, que ninguna
+  impresora del parque se equivoca. Desde la v1.9.0 ese trabajo lo hace el
+  **modo compatible**, que pliega sólo `Á Í Ó Ú`, y este interruptor queda
+  reservado a la impresora que no imprima bien ni siquiera el subconjunto
+  seguro. Con `"strip_accents": false` el texto llega al codificador con sus
+  acentos y `Ñoño 20° €` sale como `A5 6F A4 6F 20 32 30 F8 20 D5` en PC858
+  —un byte por carácter— en vez de plegado a `Nono`. Es el interruptor que se toca cuando el
   operador se queja de que le faltan las eñes, y el único cambio necesario: no
   hay que recompilar ni reinstalar, basta con editar el `config.json` y
   reiniciar el agente.
@@ -1558,7 +1785,7 @@ las compone.
 | Función | Rutas | Auth |
 |---|---|---|
 | `newPublicMux()` | `GET /health`, `GET /api/health` | No |
-| `newProtectedMux()` | `GET /api/printers`, `GET /api/printers/queue`, `POST /api/print`, `POST /api/print/pdf` | Sí |
+| `newProtectedMux()` | `GET /api/printers`, `GET /api/printers/queue`, `POST /api/print`, `POST /api/print/pdf`, `POST /api/print/calibrate`, `POST /api/print/calibrate/confirm` | Sí |
 
 ```
 corsMiddleware                       (envuelve TODO el servidor)
@@ -1611,6 +1838,8 @@ Base: `http://127.0.0.1:{port}` (puerto dinámico, default 9100)
 | `GET` | `/api/printers/queue` | Si | Cola de impresión de una impresora específica |
 | `POST` | `/api/print` | Si | Envía datos RAW (ESC/POS) a una impresora térmica |
 | `POST` | `/api/print/pdf` | Si | Imprime un archivo PDF en una impresora convencional |
+| `POST` | `/api/print/calibrate` | Si | Imprime el ticket de calibración de acentos y devuelve las opciones numeradas |
+| `POST` | `/api/print/calibrate/confirm` | Si | Guarda el perfil de la impresora a partir del número de línea que el operador leyó en el papel |
 
 ### `POST /api/print` — Cuerpo de la petición
 

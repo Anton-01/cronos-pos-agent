@@ -64,6 +64,8 @@ func TestProtectedRoutesRejectMissingOrWrongToken(t *testing.T) {
 		{http.MethodGet, "/api/printers/queue?printer_name=POS-80"},
 		{http.MethodPost, "/api/print"},
 		{http.MethodPost, "/api/print/pdf"},
+		{http.MethodPost, "/api/print/calibrate"},
+		{http.MethodPost, "/api/print/calibrate/confirm"},
 		// Not registered anywhere: the /api/ subtree is fail-closed, so an
 		// endpoint added tomorrow is guarded even before it exists.
 		{http.MethodGet, "/api/whatever"},
@@ -104,6 +106,8 @@ func TestProtectedRoutesAcceptValidToken(t *testing.T) {
 		{http.MethodPost, "/api/printers/queue"},
 		{http.MethodGet, "/api/print"},
 		{http.MethodGet, "/api/print/pdf"},
+		{http.MethodGet, "/api/print/calibrate"},
+		{http.MethodGet, "/api/print/calibrate/confirm"},
 	}
 
 	for _, tc := range paths {
@@ -208,6 +212,45 @@ func TestPrintEndpointsRejectMissingPayload(t *testing.T) {
 		}
 		if !strings.Contains(body["error"], "printer_data") {
 			t.Errorf("POST %s: got error %q, want it to name 'printer_data'", path, body["error"])
+		}
+	}
+}
+
+// La calibración no lleva "printer_data" —el ticket lo construye el agente—
+// pero sí tiene que rechazar lo que no puede atender, y hacerlo antes de tocar
+// la impresora o el config.json.
+func TestCalibrationEndpointsRejectInvalidRequests(t *testing.T) {
+	router := testRouter()
+
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"calibrar sin impresora", "/api/print/calibrate", `{}`},
+		{"confirmar sin impresora", "/api/print/calibrate/confirm", `{"option":2}`},
+		{"confirmar una opción inexistente", "/api/print/calibrate/confirm", `{"printer_name":"POS-80","option":99}`},
+		{"cuerpo no JSON", "/api/print/calibrate/confirm", `no soy json`},
+	}
+
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("X-Cronos-Agent-Token", testToken)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: got %d, want %d", tc.name, rec.Code, http.StatusBadRequest)
+			continue
+		}
+
+		var body map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Errorf("%s: la respuesta no es JSON válido: %v", tc.name, err)
+			continue
+		}
+		if body["error"] == "" {
+			t.Errorf("%s: la respuesta no explica el error: %v", tc.name, body)
 		}
 	}
 }

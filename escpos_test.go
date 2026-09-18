@@ -44,19 +44,32 @@ func TestTranscodeCP1252(t *testing.T) {
 	}
 }
 
-// El caso exacto que fallaba en la caja de cobro: "Ánimo" salía impreso como
-// "†nimo". El ticket abre con ESC t 16 (CP1252) y la Á llega ya plegada a una
-// "A" ASCII, que es lo único que imprime igual en toda tabla de caracteres,
-// tenga o no el hardware en cuenta la selección de página.
+// El caso exacto que fallaba en la caja de cobro: "Ánimo, ya falta menos para
+// navidad" salía impreso como "╡nimo, ya falta menos para navidad" mientras
+// "Michoacán" salía perfecta en el mismo ticket. El agente codificaba en CP850,
+// donde la "Á" es 0xB5, y la impresora decodificaba en PC437, donde ese byte es
+// el carácter de dibujo "╡"; la "á" (0xA0) coincide en las dos tablas y por eso
+// se salvaba.
+//
+// Con el modo compatible el ticket abre con ESC t 19 (PC858) y la "Á" llega ya
+// plegada a una "A" ASCII, que es lo único que imprime igual en cualquier tabla,
+// tenga o no el hardware en cuenta la selección de página. Lo que la impresora
+// no puede equivocar —la "á" de "Michoacán" entre ello— conserva su acento.
 func TestBuildPayloadFoldsAccentsOfTheAnimoCase(t *testing.T) {
-	got, err := BuildESCPOSPayload([]byte("Ánimo"), DefaultEncodingOptions())
+	got, err := BuildESCPOSPayload([]byte("Ánimo, Michoacán"), DefaultEncodingOptions())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x10, 'A', 'n', 'i', 'm', 'o'}
+	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13}
+	want = append(want, []byte("Animo, Michoac")...)
+	want = append(want, 0xA0, 'n') // "á" universalmente segura: 0xA0 en PC437/850/858
+
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+	if bytes.Contains(got, []byte{0xB5}) {
+		t.Error("el payload lleva 0xB5: es la 'Á' de CP850, el byte que PC437 imprime como '╡'")
 	}
 }
 
@@ -125,6 +138,7 @@ func TestBuildPayloadSelectorOverride(t *testing.T) {
 	selector := byte(0x13)
 	opts := DefaultEncodingOptions()
 	opts.CodePage = "cp1252"
+	opts.Compatibility = false // CP1252 deliberada: el modo compatible fijaría PC858
 	opts.SelectorOverride = &selector
 
 	got, err := BuildESCPOSPayload([]byte("¿Á?"), opts)
@@ -132,9 +146,9 @@ func TestBuildPayloadSelectorOverride(t *testing.T) {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	// La "Á" se pliega a "A" antes de codificar; la "¿" no lleva marca alguna,
-	// así que sigue el camino de siempre y viaja como 0xBF (CP1252).
-	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 0xBF, 'A', '?'}
+	// Sin modo compatible ni pliegue, el texto viaja con los bytes de CP1252:
+	// 0xBF la "¿" y 0xC1 la "Á".
+	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 0xBF, 0xC1, '?'}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -143,7 +157,8 @@ func TestBuildPayloadSelectorOverride(t *testing.T) {
 // CP437 (la página de fábrica de la mayoría de ticketeras) sólo contiene É de
 // las cinco vocales acentuadas mayúsculas — de ahí el fallo de producción. Las
 // que no existen deben degradarse a su equivalente ASCII en vez de imprimirse
-// como basura; por eso el valor por defecto del agente es CP1252 y no CP437.
+// como basura, que es justo lo que hace el modo compatible con esas cuatro en
+// cualquier página.
 func TestTranscodeFallbackWhenCodePageLacksRune(t *testing.T) {
 	got := transcodeToCodePage([]byte("ÁÉÍÓÚ ñ"), codePageCP437)
 	want := []byte("A\x90IOU \xA4")
@@ -232,6 +247,7 @@ func TestGraphicsCommandLength(t *testing.T) {
 func TestBuildPayloadPrependsCodePageCommand(t *testing.T) {
 	opts := DefaultEncodingOptions()
 	opts.CodePage = "cp850"
+	opts.Compatibility = false // el modo compatible codifica siempre en PC858
 
 	got, err := BuildESCPOSPayload([]byte("TOTAL"), opts)
 	if err != nil {
@@ -257,8 +273,10 @@ func TestBuildPayloadInsertsAfterInitialize(t *testing.T) {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	// Un solo "ESC @": el del propio payload. El agente no añade el suyo.
-	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 'C', 'a', 'f', 'e'}
+	// Un solo "ESC @": el del propio payload. El agente no añade el suyo. La "é"
+	// es universalmente segura (0x82 en PC437, PC850 y PC858), así que el modo
+	// compatible la deja con su acento.
+	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 'C', 'a', 'f', 0x82}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -289,6 +307,8 @@ func TestBuildPayloadWithoutTranscoding(t *testing.T) {
 
 	opts := DefaultEncodingOptions()
 	opts.CodePage = "cp850"
+	opts.Compatibility = false
+	opts.StripAccents = true
 	opts.Transcode = false
 
 	got, err := BuildESCPOSPayload(input, opts)
@@ -324,7 +344,8 @@ func TestResolveCodePage(t *testing.T) {
 		wantSelector byte
 		wantActive   bool
 	}{
-		{"", "cp1252", 0x10, true}, // sin nombre -> defaultCodePage (CP1252)
+		{"", "cp858", 0x13, true},     // sin nombre -> defaultCodePage (PC858)
+		{"auto", "cp858", 0x13, true}, // "auto" es el alias explícito de PC858
 		{"CP850", "cp850", 0x02, true},
 		{" 850 ", "cp850", 0x02, true},
 		{"cp858", "cp858", 0x13, true},
@@ -369,7 +390,7 @@ func TestBuildPayloadEmptyInput(t *testing.T) {
 }
 
 // Con la configuración por defecto todo ticket abre con la pareja completa:
-// "ESC @" (reinicio) y "ESC t 16" (CP1252), en ese orden. Al revés el reinicio
+// "ESC @" (reinicio) y "ESC t 19" (PC858), en ese orden. Al revés el reinicio
 // borraría la selección de página y el ticket volvería a imprimir basura.
 func TestBuildPayloadEmitsInitializeAndCodePage(t *testing.T) {
 	got, err := BuildESCPOSPayload([]byte("TOTAL"), DefaultEncodingOptions())
@@ -377,19 +398,19 @@ func TestBuildPayloadEmitsInitializeAndCodePage(t *testing.T) {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := append([]byte{0x1B, 0x40, 0x1B, 0x74, 0x10}, []byte("TOTAL")...)
+	want := append([]byte{0x1B, 0x40, 0x1B, 0x74, 0x13}, []byte("TOTAL")...)
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
 }
 
-// Con strip_accents en false el pliegue de diacríticos no se aplica y el texto
-// llega al codificador con sus acentos: es lo que se quiere en una ticketera que
-// sí respeta el "ESC t n". La "ñ" y el "°" —el caso que salía como varios
-// símbolos basura— viajan como un solo byte de CP1252.
+// Sin modo compatible ni pliegue de acentos el texto llega al codificador tal
+// cual: es lo que se quiere en una ticketera verificada, que sí respeta el
+// "ESC t n". "Ñ", "ñ", "°" y "€" viajan como un solo byte de PC858.
 func TestBuildPayloadWithoutStrippingAccents(t *testing.T) {
 	opts := DefaultEncodingOptions()
 	opts.StripAccents = false
+	opts.Compatibility = false
 
 	got, err := BuildESCPOSPayload([]byte("Ñoño 20° €"), opts)
 	if err != nil {
@@ -397,27 +418,47 @@ func TestBuildPayloadWithoutStrippingAccents(t *testing.T) {
 	}
 
 	want := []byte{
-		0x1B, 0x40, 0x1B, 0x74, 0x10,
-		0xD1, 'o', 0xF1, 'o', ' ', '2', '0', 0xB0, ' ', 0x80,
+		0x1B, 0x40, 0x1B, 0x74, 0x13,
+		0xA5, 'o', 0xA4, 'o', ' ', '2', '0', 0xF8, ' ', 0xD5,
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
 }
 
-// El mismo texto con el pliegue activo (el valor por defecto): las eñes pierden
-// la virgulilla, y lo que no es una marca combinante —el grado y el euro— sigue
-// pasando por el codificador de la página de códigos.
+// El mismo texto con el pliegue total activo: las eñes pierden la virgulilla, y
+// lo que no es una marca combinante —el grado y el euro— sigue pasando por el
+// codificador de la página de códigos.
 func TestBuildPayloadStripsAccentsButStillTranscodes(t *testing.T) {
-	got, err := BuildESCPOSPayload([]byte("Ñoño 20° €"), DefaultEncodingOptions())
+	opts := DefaultEncodingOptions()
+	opts.StripAccents = true
+	opts.Compatibility = false
+
+	got, err := BuildESCPOSPayload([]byte("Ñoño 20° €"), opts)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
 	want := []byte{
-		0x1B, 0x40, 0x1B, 0x74, 0x10,
-		'N', 'o', 'n', 'o', ' ', '2', '0', 0xB0, ' ', 0x80,
+		0x1B, 0x40, 0x1B, 0x74, 0x13,
+		'N', 'o', 'n', 'o', ' ', '2', '0', 0xF8, ' ', 0xD5,
 	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("payload = % X, se esperaba % X", got, want)
+	}
+}
+
+// El modo compatible es el término medio y el valor por defecto: la "Ñ" y el
+// "°" conservan su byte porque PC437, PC850 y PC858 coinciden en él, y solo lo
+// que esas tres tablas codifican distinto —aquí el euro— baja a ASCII.
+func TestBuildPayloadCompatibilityKeepsWhatIsSafe(t *testing.T) {
+	got, err := BuildESCPOSPayload([]byte("Ñoño 20° €"), DefaultEncodingOptions())
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	want := []byte{0x1B, 0x40, 0x1B, 0x74, 0x13, 0xA5, 'o', 0xA4, 'o', ' ', '2', '0', 0xF8, ' '}
+	want = append(want, []byte("EUR")...)
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -435,7 +476,7 @@ func TestBuildPayloadWithoutInitialize(t *testing.T) {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := append([]byte{0x1B, 0x74, 0x10}, []byte("TOTAL")...)
+	want := append([]byte{0x1B, 0x74, 0x13}, []byte("TOTAL")...)
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -451,7 +492,7 @@ func TestBuildPayloadDoesNotDuplicateInitialize(t *testing.T) {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	want := []byte{0x1B, 0x40, 0x1B, 0x40, 0x1B, 0x74, 0x10, 'O', 'K'}
+	want := []byte{0x1B, 0x40, 0x1B, 0x40, 0x1B, 0x74, 0x13, 'O', 'K'}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = % X, se esperaba % X", got, want)
 	}
@@ -464,6 +505,7 @@ func TestBuildPayloadDoesNotDuplicateInitialize(t *testing.T) {
 func TestBuildPayloadReplacesUnmappableRunes(t *testing.T) {
 	opts := DefaultEncodingOptions()
 	opts.CodePage = "cp437"
+	opts.Compatibility = false
 	opts.StripAccents = false
 
 	got, err := BuildESCPOSPayload([]byte("漢 ñ"), opts)
@@ -488,8 +530,14 @@ func TestDefaultEncodingOptions(t *testing.T) {
 	if opts.CodePage != defaultCodePage {
 		t.Errorf("CodePage = %q, se esperaba %q", opts.CodePage, defaultCodePage)
 	}
-	if !opts.Transcode || !opts.StripAccents || !opts.Initialize {
-		t.Errorf("los tres tratamientos deben venir activos: %+v", opts)
+	if !opts.Transcode || !opts.Compatibility || !opts.Initialize {
+		t.Errorf("transcodificación, modo compatible y reinicio deben venir activos: %+v", opts)
+	}
+	// El pliegue total de acentos ya no es el valor por defecto: sacrificaba la
+	// "á" de "Michoacán" para no equivocar la "Á" de "Ánimo", y de eso se
+	// encarga ahora el modo compatible sin perder la primera.
+	if opts.StripAccents {
+		t.Errorf("StripAccents debe venir desactivado: %+v", opts)
 	}
 	if opts.SelectorOverride != nil {
 		t.Errorf("SelectorOverride = %v, se esperaba nil", *opts.SelectorOverride)

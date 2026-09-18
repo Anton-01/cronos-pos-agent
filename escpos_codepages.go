@@ -14,16 +14,19 @@ import "golang.org/x/text/encoding/charmap"
 // pasa por el codificador: se copia tal cual, que es lo que mantiene intactos
 // los comandos ESC/POS.
 var (
-	// codePageCP1252 es Windows-1252 (Latin-1 de Windows): la página por
-	// defecto del agente y la que entienden las ticketeras conectadas a un
-	// equipo Windows. Es la que arregla los acentos de "Ánimo".
+	// codePageCP1252 es Windows-1252 (Latin-1 de Windows), la página por
+	// defecto de la v1.5.0 a la v1.8.0. Ya no lo es: por encima del ASCII no
+	// comparte ningún byte con PC437, así que en la impresora que ignora el
+	// "ESC t 16" no falla un acento sino todos. Ver defaultCodePage.
 	codePageCP1252 = charmap.Windows1252
 
 	// codePageCP850 es PC850 Multilingual (Latin-1), el valor por defecto
 	// hasta la v1.4.0.
 	codePageCP850 = charmap.CodePage850
 
-	// codePageCP858 es PC858: CP850 con el símbolo del euro.
+	// codePageCP858 es PC858 (CP850 con el símbolo del euro) y la página por
+	// defecto del agente desde la v1.9.0: comparte con PC437 el byte de todos
+	// los acentos del español menos Á Í Ó Ú, que resuelve el modo compatible.
 	codePageCP858 = charmap.CodePage858
 
 	// codePageCP437 es PC437 USA/Standard Europe, la página de fábrica de la

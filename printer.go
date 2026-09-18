@@ -15,6 +15,26 @@ type PrintRequest struct {
 	Transcode *bool `json:"transcode,omitempty"`
 }
 
+// CalibrationRequest pide el ticket de calibración de acentos para una
+// impresora. Es el único modo de averiguar qué página de códigos decodifica de
+// verdad: ESC/POS no tiene ninguna orden para preguntárselo.
+type CalibrationRequest struct {
+	PrinterName string `json:"printer_name"`
+}
+
+// CalibrationConfirmRequest cierra la calibración: el número de la línea que el
+// operador ha visto impresa correctamente en el ticket de prueba.
+type CalibrationConfirmRequest struct {
+	PrinterName string `json:"printer_name"`
+	// Option es el número entre corchetes de esa línea. El valor 0 declara que
+	// ninguna era correcta, lo que fija la impresora en modo compatible de
+	// forma permanente: imprimirá "Animo" antes que "╡nimo".
+	Option int `json:"option"`
+	// CodePageID permite además fijar el "n" de "ESC t n" para esta impresora,
+	// para las clónicas que numeran sus páginas de otra forma. Nil = estándar.
+	CodePageID *int `json:"code_page_id,omitempty"`
+}
+
 type PrintJob struct {
 	ID           int    `json:"id"`
 	DocumentName string `json:"document_name"`
