@@ -64,6 +64,7 @@ func TestProtectedRoutesRejectMissingOrWrongToken(t *testing.T) {
 		{http.MethodGet, "/api/printers/queue?printer_name=POS-80"},
 		{http.MethodPost, "/api/print"},
 		{http.MethodPost, "/api/print/pdf"},
+		{http.MethodPost, "/api/print/test"},
 		{http.MethodPost, "/api/print/calibrate"},
 		{http.MethodPost, "/api/print/calibrate/confirm"},
 		// Not registered anywhere: the /api/ subtree is fail-closed, so an
@@ -106,6 +107,7 @@ func TestProtectedRoutesAcceptValidToken(t *testing.T) {
 		{http.MethodPost, "/api/printers/queue"},
 		{http.MethodGet, "/api/print"},
 		{http.MethodGet, "/api/print/pdf"},
+		{http.MethodGet, "/api/print/test"},
 		{http.MethodGet, "/api/print/calibrate"},
 		{http.MethodGet, "/api/print/calibrate/confirm"},
 	}
@@ -219,7 +221,7 @@ func TestPrintEndpointsRejectMissingPayload(t *testing.T) {
 // La calibración no lleva "printer_data" —el ticket lo construye el agente—
 // pero sí tiene que rechazar lo que no puede atender, y hacerlo antes de tocar
 // la impresora o el config.json.
-func TestCalibrationEndpointsRejectInvalidRequests(t *testing.T) {
+func TestDiagnosticEndpointsRejectInvalidRequests(t *testing.T) {
 	router := testRouter()
 
 	cases := []struct {
@@ -227,6 +229,8 @@ func TestCalibrationEndpointsRejectInvalidRequests(t *testing.T) {
 		path string
 		body string
 	}{
+		{"ticket de prueba sin impresora", "/api/print/test", `{}`},
+		{"ticket de prueba con cuerpo no JSON", "/api/print/test", `no soy json`},
 		{"calibrar sin impresora", "/api/print/calibrate", `{}`},
 		{"confirmar sin impresora", "/api/print/calibrate/confirm", `{"option":2}`},
 		{"confirmar una opción inexistente", "/api/print/calibrate/confirm", `{"printer_name":"POS-80","option":99}`},

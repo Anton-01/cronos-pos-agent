@@ -53,26 +53,19 @@ const (
 	mbTopMost         = 0x00040000
 )
 
-const (
-	welcomeBoxTitle = "Instalación Exitosa - Cronos POS"
-	welcomeBoxText  = "El Agente de Impresión Cronos POS se ha instalado correctamente.\n\n" +
-		"El sistema se está ejecutando silenciosamente en segundo plano. " +
-		"Puedes gestionarlo desde el icono del gatito en la barra de tareas (junto al reloj)."
-)
-
-// showWelcomeWindow opens the native welcome dialog and blocks until the
+// showSetupDialog opens the native confirmation dialog and blocks until the
 // operator dismisses it, so it is called from its own goroutine.
 //
 // Both strings are converted to UTF-16 —the "W" in MessageBoxW— before the
 // call, which is what lets the accents and the "¡" of the message reach the
 // screen intact. The owner window handle is 0: the agent has no main window,
 // and a null owner makes the box a standalone top-level dialog.
-func showWelcomeWindow() error {
-	title, err := syscall.UTF16PtrFromString(welcomeBoxTitle)
+func showSetupDialog(boxTitle, boxText string) error {
+	title, err := syscall.UTF16PtrFromString(boxTitle)
 	if err != nil {
 		return fmt.Errorf("título no convertible a UTF-16: %w", err)
 	}
-	text, err := syscall.UTF16PtrFromString(welcomeBoxText)
+	text, err := syscall.UTF16PtrFromString(boxText)
 	if err != nil {
 		return fmt.Errorf("mensaje no convertible a UTF-16: %w", err)
 	}

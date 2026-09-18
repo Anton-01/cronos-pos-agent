@@ -15,6 +15,18 @@ type PrintRequest struct {
 	Transcode *bool `json:"transcode,omitempty"`
 }
 
+// TestTicketRequest pide el ticket de autodiagnóstico: los datos técnicos de la
+// impresora, el estado de la codificación y una muestra de cada clase de
+// carácter que puede llevar un ticket en español.
+type TestTicketRequest struct {
+	PrinterName string `json:"printer_name"`
+	// Columns es el ancho de línea en caracteres (24–64). El agente no puede
+	// preguntárselo a la impresora —depende del rollo: 32 en 58 mm, 42 en
+	// 80 mm—, así que el ticket imprime una regla y aquí se ajusta. Cero o
+	// fuera de rango usa 42.
+	Columns int `json:"columns,omitempty"`
+}
+
 // CalibrationRequest pide el ticket de calibración de acentos para una
 // impresora. Es el único modo de averiguar qué página de códigos decodifica de
 // verdad: ESC/POS no tiene ninguna orden para preguntárselo.

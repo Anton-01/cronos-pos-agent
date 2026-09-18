@@ -338,3 +338,74 @@ func disableAutostart() error {
 	}
 	return nil
 }
+
+// printerRegistryRoot is where the Windows spooler keeps the per-printer
+// settings. The port is read from here because the Win32 call that would return
+// it (EnumPrinters with PRINTER_INFO_2) is not exposed by the printer package,
+// and the port is the single most useful field when a till "does not print":
+// USB001, a COM port and a \\server\queue share fail in completely different
+// ways.
+const printerRegistryRoot = `SYSTEM\CurrentControlSet\Control\Print\Printers`
+
+// describePrinter collects what Windows knows about a printer for the self-test
+// ticket.
+//
+// Every lookup is best-effort and independent: a driver that cannot be read does
+// not cost the port, and neither costs the ticket. What fails is recorded in
+// Notes and printed on the paper, because "no se pudo leer el controlador" is
+// itself a diagnosis — it usually means the queue exists but its driver package
+// is broken, which is exactly the kind of thing nobody can describe by phone.
+func describePrinter(name string) PrinterTechnicalInfo {
+	info := PrinterTechnicalInfo{Name: name}
+
+	if def, err := printer.Default(); err == nil {
+		info.IsDefault = strings.EqualFold(strings.TrimSpace(def), strings.TrimSpace(name))
+	} else {
+		info.Notes = append(info.Notes, "no se pudo leer la impresora predeterminada")
+	}
+
+	p, err := printer.Open(name)
+	if err != nil {
+		info.Notes = append(info.Notes, "no se pudo abrir la cola: "+err.Error())
+	} else {
+		defer p.Close()
+
+		if driver, err := p.DriverInfo(); err == nil {
+			info.Driver = driver.Name
+			info.Processor = driver.Environment
+		} else {
+			info.Notes = append(info.Notes, "no se pudo leer el controlador")
+		}
+
+		// Native EnumJobs, not the PowerShell of queryPrintQueue: the test
+		// ticket must print on a till whose PowerShell execution policy blocks
+		// scripts, and it must not take a second to do it.
+		if jobs, err := p.Jobs(); err == nil {
+			info.QueuedIDs = len(jobs)
+		}
+	}
+
+	if port, err := printerPortFromRegistry(name); err == nil {
+		info.Port = port
+	} else {
+		info.Notes = append(info.Notes, "no se pudo leer el puerto")
+	}
+
+	return info
+}
+
+// printerPortFromRegistry reads the "Port" value the spooler stores for a
+// printer (USB001, COM3, \\host\queue, …).
+func printerPortFromRegistry(name string) (string, error) {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, printerRegistryRoot+`\`+name, registry.QUERY_VALUE)
+	if err != nil {
+		return "", err
+	}
+	defer key.Close()
+
+	port, _, err := key.GetStringValue("Port")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(port), nil
+}

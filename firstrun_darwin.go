@@ -2,18 +2,32 @@
 
 package main
 
-import "os/exec"
+import (
+	"os/exec"
+	"strings"
+)
 
-// showWelcomeWindow muestra en macOS el equivalente ligero de la ventana de
-// bienvenida de Windows: un diálogo del sistema con osascript.
+// showSetupDialog muestra en macOS el equivalente ligero del diálogo de
+// Windows: un cuadro del sistema con osascript.
 //
 // No se replica la ventana con ilustración porque el flujo que la motiva es
 // específico de Windows: allí el instalador termina sin dejar ninguna señal
 // visible salvo un icono de 16 px en la bandeja. En macOS la app se instala
 // arrastrándola a /Applications y el propio Finder da esa confirmación.
-func showWelcomeWindow() error {
-	script := `display dialog "` + welcomeTitleMac + `" with title "Cronos POS Agent" buttons {"Cerrar"} default button "Cerrar" with icon note`
+//
+// Las comillas dobles del texto se escapan antes de incrustarlo en el script:
+// osascript recibe el diálogo como una cadena de AppleScript, y una comilla sin
+// escapar la cerraría a mitad y convertiría el resto del mensaje en código.
+func showSetupDialog(boxTitle, boxText string) error {
+	script := "display dialog \"" + escapeAppleScript(boxText) + "\"" +
+		" with title \"" + escapeAppleScript(boxTitle) + "\"" +
+		" buttons {\"Cerrar\"} default button \"Cerrar\" with icon note"
 	return exec.Command("osascript", "-e", script).Run()
 }
 
-const welcomeTitleMac = "¡Cronos POS se ha instalado correctamente!"
+// escapeAppleScript neutraliza las barras invertidas y las comillas dobles de
+// un texto para poder incrustarlo en una cadena de AppleScript.
+func escapeAppleScript(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	return strings.ReplaceAll(s, "\"", "\\\"")
+}

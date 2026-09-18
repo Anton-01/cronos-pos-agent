@@ -87,6 +87,7 @@ func newProtectedMux() *http.ServeMux {
 	mux.HandleFunc("/api/printers/queue", handlePrinterQueue)
 	mux.HandleFunc("/api/print", handlePrint)
 	mux.HandleFunc("/api/print/pdf", handlePrintPDF)
+	mux.HandleFunc("/api/print/test", handlePrintTest)
 	mux.HandleFunc("/api/print/calibrate", handleCalibrate)
 	mux.HandleFunc("/api/print/calibrate/confirm", handleCalibrateConfirm)
 
@@ -470,4 +471,44 @@ func writeJSONError(w http.ResponseWriter, status int, message string, err error
 		body["details"] = err.Error()
 	}
 	json.NewEncoder(w).Encode(body)
+}
+
+// handlePrintTest prints the self-test ticket on one printer: its technical
+// data, the encoding actually in force for it, a column ruler and a sample of
+// every character class a Spanish receipt can contain.
+//
+// It is the endpoint a support call should start with. Everything it puts on
+// paper is something the agent knows and the operator cannot read anywhere
+// else — the driver, the port, the code page, whether the printer was ever
+// calibrated — so one photo of the ticket answers the questions that otherwise
+// take a remote session to establish.
+func handlePrintTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req TestTicketRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "JSON inválido en el cuerpo de la petición", err)
+		return
+	}
+	if req.PrinterName == "" {
+		writeJSONError(w, http.StatusBadRequest, "El campo 'printer_name' es obligatorio", nil)
+		return
+	}
+
+	if err := PrintTestTicket(req.PrinterName, req.Columns); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Error al imprimir el ticket de prueba", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":       "ok",
+		"message":      "Ticket de prueba enviado a la impresora.",
+		"printer_name": req.PrinterName,
+		"printer":      describePrinter(req.PrinterName),
+		"profile":      PrinterProfileFor(req.PrinterName),
+	})
 }
