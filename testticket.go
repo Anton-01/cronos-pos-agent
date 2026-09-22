@@ -240,6 +240,10 @@ func BuildTestTicket(info PrinterTechnicalInfo, enc EncodingOptions, profile Pri
 	b.field("Versión", AgentVersion)
 	b.field("Puerto HTTP", fmt.Sprintf("%d", port))
 	b.field("Sistema", runtimeLabel())
+	// Las dos preguntas que plantea una caja después de reiniciarse: ¿vuelve
+	// solo el agente, y sabrá el operador encontrarlo si no vuelve?
+	b.field("Inicio auto.", autostartStatusLabel())
+	b.field("Acceso dir.", startMenuShortcutStatusLabel())
 
 	// --- Codificación -------------------------------------------------------
 	b.section("CODIFICACION")

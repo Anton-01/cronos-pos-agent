@@ -36,6 +36,15 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
   endpoints de impresión, y la etiqueta divergente del struct hacía que cada
   arqueo de caja recibiera un `400`. Ver "Endpoint `POST /api/print/pdf` —
   Detalle Técnico".
+- **El agente no creaba ningún acceso directo** (corregido en la v1.9.1). El
+  único que existía lo creaba la sección `[Icons]` del instalador, y el
+  instalador no compilaba, así que ninguna caja llegó a tener uno. Ejecutar el
+  `.exe` a mano deja el binario en `C:\Program Files\CronosAgent` —se reubica
+  solo— pero **el buscador del Menú de Inicio sólo indexa los `.lnk` de
+  `Start Menu\Programs`, nunca un `.exe` suelto**: el programa quedaba instalado
+  y a la vez imposible de encontrar. Ahora lo crea el propio agente en cada
+  arranque, como ya reparaba su entrada de auto-arranque. Ver "Acceso Directo
+  del Menú de Inicio".
 - **`installer/setup.iss` no compilaba** (corregido en la v1.9.0). La reescritura
   de la Fase 12 dejó las llamadas pero borró el `#define AppGuid` y cuatro
   funciones de `[Code]` (`PreviousInstallFound`, `PreviousLocation`,
@@ -135,6 +144,8 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Recursos Win32 | `rsrc_windows_amd64.syso` (icono + manifiesto + **VERSIONINFO**) | Icono en Explorador/Alt+Tab, botones con estilo moderno (Common Controls 6) y una pestaña *Detalles* con versión, empresa y copyright: es lo primero que mira un departamento de sistemas antes de autorizar un `.exe` |
 | Metadatos del `.exe` | `versioninfo.json` + `goversioninfo` | `rsrc` no sabe generar VERSIONINFO. Un solo generador produce ahora icono, manifiesto y versión, y `versioninfo.json` es texto revisable en el repositorio |
 | Validación del instalador | Tests de Go sobre `installer/setup.iss` | ISCC sólo corre en Windows, así que nada en CI miraba ese script: por eso se publicó una versión que no compilaba. Ver "Validación Estática del Instalador" |
+| Acceso directo | Lo crea el agente (`EnsureStartMenuShortcut`), no sólo el instalador | El binario también se ejecuta a mano, y entonces no hay instalador que lo cree. Un `.exe` en Program Files no lo indexa el buscador de Windows: sin `.lnk` el programa es invisible |
+| Escritura del `.lnk` | COM (`IShellLinkW` + `IPersistFile`) | PowerShell puede estar bloqueado por directiva en una caja, y escribir el formato binario a mano no es verificable sin Windows. `ole32.dll` es parte del sistema |
 | Diagnóstico de impresión | `POST /api/print/test` + submenú de la bandeja | Una foto del ticket de prueba responde de una vez las preguntas que si no exigen una sesión remota: controlador, puerto, página de códigos y si la impresora está calibrada |
 | Ventana de bienvenida | `MessageBoxW` de `user32.dll` vía `syscall.NewLazyDLL` | La ventana Win32 a medida fallaba en silencio en producción; `MessageBoxW` es parte del sistema operativo: sin clase de ventana, sin bucle de mensajes, sin CGO |
 | Ilustraciones | Generadas por código (`tools/genassets`) | Recursos reproducibles y auditables en vez de binarios opacos |
@@ -163,6 +174,10 @@ cronos-pos-agent/
 ├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
 ├── testticket.go        # Ticket de autodiagnóstico: datos técnicos, regla de columnas y juego de caracteres
 ├── traymenu.go          # Submenú "Imprimir Ticket de Prueba" de la bandeja, con ranuras fijas
+├── startmenu.go         # Nombre del acceso directo y tipos COM (GUID + vtables) verificables por test
+├── startmenu_windows.go # Creación del .lnk del Menú de Inicio con IShellLinkW
+├── startmenu_darwin.go  # Build tag: darwin — sin Menú de Inicio, no aplica
+├── startmenu_test.go    # Offsets de las vtables COM y GUIDs contra las cabeceras
 ├── versioninfo.json     # Metadatos VERSIONINFO del .exe (entrada de goversioninfo)
 ├── installer_test.go    # Validación estática de setup.iss, app.manifest y versioninfo.json
 ├── testticket_test.go   # Tests del ticket de prueba (ancho, juego de caracteres, codificación)
@@ -700,6 +715,101 @@ No sustituyen a ISCC y no lo pretenden: atrapan la clase de defecto que se
 publicó — una referencia sin nada detrás, una versión que se descoordinó y una
 codificación que convierte los mensajes en mojibake.
 
+### Acceso Directo del Menú de Inicio
+
+Implementado en **`startmenu_windows.go`**. Es lo que hace que el programa se
+encuentre escribiendo su nombre, y hasta la v1.9.1 **no existía en ninguna
+caja**.
+
+**El agujero que cierra.** El único acceso directo lo creaba la sección
+`[Icons]` del instalador, y ese script no compilaba. Lo que el agente sí hacía
+por su cuenta era reubicarse a una ruta permanente
+(`EnsurePermanentLocation`), lo que dejaba la caja en el peor de los dos
+mundos: el programa **está** instalado, en `C:\Program Files\CronosAgent`, y aun
+así Windows no lo encuentra, porque el buscador del Menú de Inicio indexa los
+`.lnk` de `Start Menu\Programs` y **nunca un `.exe` suelto**. Escribir "Cronos"
+no devolvía nada y el operador tenía que ir a buscar el ejecutable a mano.
+
+Por eso lo crea ahora el propio agente, igual que repara su entrada de
+auto-arranque en cada arranque. Así funciona en los dos caminos que puede
+seguir una caja —instalada con el instalador, o con el `.exe` ejecutado
+directamente— y no sólo en el primero.
+
+**Una sola entrada.** El agente busca antes de crear, en las cuatro
+combinaciones posibles: Menú de Inicio del usuario y el común, en la raíz de
+`Programas` y dentro de un grupo con el nombre del producto (el formato que
+usaban versiones anteriores del instalador). Si encuentra uno, no escribe nada.
+El `[Icons]` del instalador se cambió además a `{autoprograms}\{#AppName}` —la
+raíz, sin grupo— para que sea exactamente la misma ruta que usaría el agente, y
+`TestInstallerShortcutMatchesTheAgentShortcut` falla si los dos nombres se
+separan.
+
+**Por qué se busca antes por el usuario.** El `.lnk` se escribe en
+`%APPDATA%\...\Start Menu\Programs`, que siempre es escribible sin elevación y
+está indexado para el operador que está de verdad en la caja. El común
+(`%ProgramData%`) sólo se lee, porque escribir ahí exige administrador.
+
+**Búsqueda.** El nombre del acceso directo es el nombre del producto,
+`Cronos POS Agent`, y eso es lo que lo hace encontrable: el buscador compara
+cada palabra de la consulta con las palabras del nombre, de modo que "Cronos",
+"agent", "POS" y "Cronos agent" llegan todas al mismo elemento.
+`TestStartMenuShortcutIsFindableByName` fija ese contrato.
+
+**Por qué COM y no PowerShell.** Un acceso directo de Windows es un formato
+binario, y la forma soportada de escribirlo es el objeto `ShellLink` del propio
+shell. Se descartaron dos alternativas:
+
+- `New-Object -ComObject WScript.Shell` desde PowerShell son tres líneas, pero
+  el agente corre en cajas donde AppLocker o una directiva de grupo pueden
+  bloquear `powershell.exe`, y éste es justo el paso del que depende que el
+  operador pueda encontrar el programa.
+- Escribir el `.lnk` byte a byte está documentado (MS-SHLLINK), pero una
+  cabecera sutilmente mal puesta produce un acceso directo que el Explorador se
+  niega a abrir en silencio, y nada en este repositorio podría probarlo.
+
+`ole32.dll` no tiene ninguno de los dos problemas: es parte del sistema, y el
+shell escribe un acceso directo correcto por construcción.
+
+**Las vtables se verifican por test.** El orden de los campos de una vtable
+**es** la definición de la interfaz: un campo insertado o movido llama a un
+método distinto del previsto —`SetPath` pasaría a ser `Resolve`— y el acceso
+directo saldría corrupto o tumbaría el proceso. Como este código sólo compila
+en Windows y aquí no hay ninguna máquina Windows, los tipos COM viven en
+`startmenu.go` **sin build tag** y `TestShellLinkVtableLayout` comprueba en
+cualquier plataforma, con `unsafe.Offsetof`, que cada método cae en la ranura
+que dicen las cabeceras de COM. `TestShellLinkGUIDs` hace lo propio con los tres
+GUID: un dígito mal y `CoCreateInstance` devuelve "clase no registrada" y no se
+crea ningún acceso directo, en todas las máquinas y sin decir nada.
+
+**Qué pasa al hacer doble clic con el agente ya en marcha.** Arranca una
+segunda instancia, `killOrphanInstances()` mata la anterior y la nueva toma el
+relevo. No quedan dos gatos en la bandeja ni dos procesos peleando por el
+puerto.
+
+### Volver a arrancar tras un reinicio
+
+Son dos mecanismos independientes, y conviene no confundirlos porque fallan por
+motivos distintos:
+
+| Mecanismo | Qué hace | Dónde vive |
+|---|---|---|
+| Auto-arranque | El agente vuelve **solo** al iniciar sesión | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → `CronosPOSAgent` |
+| Acceso directo | El operador puede **encontrarlo y abrirlo** si no volvió | `Start Menu\Programs\Cronos POS Agent.lnk` |
+
+El auto-arranque es **por usuario**: la entrada vive en `HKCU`, la rama del
+usuario que ejecutó el agente. De ahí el fallo más habitual y más difícil de
+ver: si alguien lanzó el `.exe` con **"Ejecutar como administrador"**, la
+entrada queda escrita en la rama del *administrador*, y en la sesión del
+operador no hay nada que arranque. Desde la v1.9.1 el log lo dice explícitamente
+(`[autostart] Auto-arranque registrado como "..." (usuario X, HKCU\...)`), y el
+ticket de prueba imprime los dos estados —"Inicio auto." y "Acceso dir."— para
+que una foto responda las dos preguntas que plantea una caja después de
+reiniciarse.
+
+El instalador evita ese fallo por su cuenta: lanza el agente con
+`runasoriginaluser`, de modo que la entrada se escribe en la rama del operador
+aunque Setup corra elevado.
+
 ### Entrada en "Agregar o quitar programas"
 
 Inno construye la clave de desinstalación a partir de `AppId`, y de ahí salen
@@ -1181,7 +1291,7 @@ Qué imprime, por bloques:
 | Bloque | Contenido |
 |---|---|
 | Datos de la impresora | Nombre, controlador, puerto (`USB001`, `COM3`, `\\host\cola`), entorno, si es la predeterminada y cuántos trabajos hay en cola |
-| Agente | Versión, **puerto HTTP real** y sistema operativo |
+| Agente | Versión, **puerto HTTP real**, sistema operativo y el estado del auto-arranque y del acceso directo |
 | Codificación | Página activa y su `ESC t n` exacto, transcodificación, modo compatible, plegado total, reinicio y el perfil de esa impresora |
 | Ancho de línea | Una regla `....+...10....+...20` con su escala debajo, para contar la columna donde corta el papel |
 | Alfabeto, números | `A-Z`, `a-z`, `0123456789` y cifras con formato de importe |

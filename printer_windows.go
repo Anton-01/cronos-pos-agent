@@ -294,7 +294,14 @@ func EnsureAutostartRegistered() {
 		log.Printf("[autostart] No se pudo registrar el auto-arranque: %v", err)
 		return
 	}
-	log.Printf("[autostart] Auto-arranque registrado como %s", expected)
+	// El nombre del usuario no es adorno: la entrada vive en HKCU, que es la
+	// rama del usuario que ejecuta el agente. Si alguien lanzó el .exe con
+	// "Ejecutar como administrador", queda registrada en la rama del
+	// administrador y el agente no vuelve tras reiniciar en la sesión del
+	// operador. Con el usuario en el log, ese caso se ve de un vistazo en vez
+	// de deducirse.
+	log.Printf("[autostart] Auto-arranque registrado como %s (usuario %s, HKCU\\%s)",
+		expected, os.Getenv("USERNAME"), registryKeyPath)
 }
 
 func killOrphanInstances() {

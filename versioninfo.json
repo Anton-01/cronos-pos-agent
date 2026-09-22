@@ -1,7 +1,7 @@
 {
   "FixedFileInfo": {
-    "FileVersion": { "Major": 1, "Minor": 9, "Patch": 0, "Build": 0 },
-    "ProductVersion": { "Major": 1, "Minor": 9, "Patch": 0, "Build": 0 },
+    "FileVersion": { "Major": 1, "Minor": 9, "Patch": 1, "Build": 0 },
+    "ProductVersion": { "Major": 1, "Minor": 9, "Patch": 1, "Build": 0 },
     "FileFlagsMask": "3f",
     "FileFlags": "00",
     "FileOS": "040004",
@@ -12,14 +12,14 @@
     "Comments": "Agente local de impresion para punto de venta. Expone una API HTTP en 127.0.0.1 e imprime tickets ESC/POS y documentos PDF en las impresoras del equipo.",
     "CompanyName": "Cronos SaaS",
     "FileDescription": "Cronos POS Agent",
-    "FileVersion": "1.9.0.0",
+    "FileVersion": "1.9.1.0",
     "InternalName": "cronos-pos-agent",
     "LegalCopyright": "Copyright (C) 2026 Cronos SaaS",
     "LegalTrademarks": "",
     "OriginalFilename": "cronos-pos-agent.exe",
     "PrivateBuild": "",
     "ProductName": "Cronos POS Agent",
-    "ProductVersion": "1.9.0.0",
+    "ProductVersion": "1.9.1.0",
     "SpecialBuild": ""
   },
   "VarFileInfo": {

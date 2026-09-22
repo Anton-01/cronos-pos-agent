@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-const AgentVersion = "1.9.0"
+const AgentVersion = "1.9.1"
 
 // configFileName es el nombre del archivo de configuración dentro de agentDir().
 const configFileName = "config.json"

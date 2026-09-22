@@ -44,7 +44,7 @@
 ; =============================================================================
 
 #define AppName "Cronos POS Agent"
-#define AppVersion "1.9.0"
+#define AppVersion "1.9.1"
 #define AppPublisher "Cronos SaaS"
 #define AppExeName "cronos-pos-agent.exe"
 #define AppFolderName "CronosAgent"
@@ -252,9 +252,18 @@ Name: "{localappdata}\{#AppFolderName}"; Flags: uninsneveruninstall; \
 ; {group} and {autodesktop} follow the install mode: on an elevated install they
 ; resolve to the common (all users) locations, which is what a shared POS
 ; machine needs; on a non-elevated install they fall back to the current user.
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
-Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+; El acceso directo va en la RAIZ de Programas, no dentro de un grupo, y con el
+; nombre exacto que usa EnsureStartMenuShortcut() en el agente. Asi la caja
+; acaba con UNA sola entrada tanto si se instalo con el instalador como si se
+; ejecuto el .exe a mano: el agente encuentra la que dejo el instalador y no
+; crea otra. El nombre es ademas lo que se teclea para encontrarlo, porque el
+; buscador del Menu de Inicio compara cada palabra de la busqueda con las del
+; nombre ("Cronos", "agent" y "Cronos agent" llegan todas a "Cronos POS Agent").
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
+  Comment: "Agente de impresion de Cronos POS"
+Name: "{autoprograms}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
+  Comment: "Agente de impresion de Cronos POS"
 
 [Run]
 ; Generates the SSL certificates in the data folder of the user who installs.

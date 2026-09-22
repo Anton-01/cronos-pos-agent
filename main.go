@@ -135,6 +135,14 @@ func main() {
 	// entre comillas dobles), salvo que el usuario la haya desactivado.
 	EnsureAutostartRegistered()
 
+	// Y el acceso directo del Menú de Inicio, que es lo que hace que el
+	// programa se encuentre escribiendo su nombre. Va aquí y no sólo en el
+	// instalador porque el binario también puede haberse ejecutado a mano: la
+	// reubicación de arriba lo deja en Program Files, donde el buscador de
+	// Windows no lo ve, y sin esta llamada el agente quedaba instalado y
+	// perfectamente invisible.
+	EnsureStartMenuShortcut()
+
 	// The welcome dialog runs in its own goroutine: MessageBoxW is modal and
 	// blocks until the operator dismisses it, while systray.Run() below takes
 	// over the main thread and does not return until the agent is closed.

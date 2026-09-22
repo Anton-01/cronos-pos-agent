@@ -253,3 +253,46 @@ func stripPascalNoise(code string) string {
 	code = regexp.MustCompile(`(?s)\{[^#][^}]*\}`).ReplaceAllString(code, "")
 	return regexp.MustCompile(`'[^'\n]*'`).ReplaceAllString(code, "''")
 }
+
+// The installer and the agent must write the shortcut to the same place under
+// the same name, or a till that was installed with the installer and then
+// started the agent ends up with two identical entries in the Start menu.
+func TestInstallerShortcutMatchesTheAgentShortcut(t *testing.T) {
+	src := readInstallerScript(t)
+
+	appName := regexp.MustCompile(`(?m)^#define\s+AppName\s+"([^"]+)"`).FindStringSubmatch(src)
+	if appName == nil {
+		t.Fatal("setup.iss no declara AppName")
+	}
+	if appName[1] != startMenuShortcutName {
+		t.Errorf("el instalador crea el acceso directo como %q y el agente busca %q: la caja acabaría con dos entradas",
+			appName[1], startMenuShortcutName)
+	}
+
+	// {autoprograms} es la raíz de "Programas", que es donde busca
+	// findStartMenuShortcut(); un grupo propio dejaría la entrada en una
+	// subcarpeta que el agente no reconocería como suya.
+	if !strings.Contains(src, `Name: "{autoprograms}\{#AppName}"`) {
+		t.Error("el acceso directo del Menú de Inicio no está en {autoprograms}: el agente no lo encontraría y crearía otro")
+	}
+}
+
+// The whole point of the shortcut is that the operator can find the program by
+// typing its name. The Start menu search matches every word of the query
+// against the words of the entry, so the name has to contain the words people
+// actually type.
+func TestStartMenuShortcutIsFindableByName(t *testing.T) {
+	words := map[string]bool{}
+	for _, word := range strings.Fields(strings.ToLower(startMenuShortcutName)) {
+		words[word] = true
+	}
+
+	for _, query := range []string{"cronos", "agent", "cronos agent", "pos", "cronos pos agent"} {
+		for _, term := range strings.Fields(query) {
+			if !words[term] {
+				t.Errorf("buscar %q no encontraría %q: le falta la palabra %q",
+					query, startMenuShortcutName, term)
+			}
+		}
+	}
+}
