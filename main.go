@@ -41,6 +41,14 @@ var httpServer atomic.Pointer[http.Server]
 // httpServer: written by onReady, read by onExit.
 var httpListener atomic.Pointer[net.Listener]
 
+// agentPort es el puerto en el que el servidor HTTP quedó escuchando, que puede
+// no ser el configurado si estaba ocupado (ver ResolvePort). Lo lee el ticket de
+// prueba para imprimirlo en su bloque técnico: en una incidencia, saber que el
+// agente acabó en el 9101 y no en el 9100 explica por sí solo que el frontend no
+// lo encuentre. Atómico por el mismo motivo que httpServer: lo escribe onReady y
+// lo leen otras goroutines.
+var agentPort atomic.Int64
+
 // agentDone se cierra en onExit para que las goroutines de larga vida (polling
 // de actualizaciones, bucle del menú) terminen en vez de quedar colgadas.
 var (
@@ -53,7 +61,9 @@ func main() {
 	disableAutostartFlag := flag.Bool("disable-autostart", false, "Elimina el auto-arranque del sistema y sale (usado por el desinstalador)")
 	noInstall := flag.Bool("no-install", false, "No reubicar el binario a la ruta permanente (uso en desarrollo)")
 	relaunched := flag.Bool("relaunched", false, "Uso interno: el agente ya fue relanzado desde la ruta permanente")
-	firstRun := flag.Bool("first-run", false, "Muestra la ventana de bienvenida post-instalación (lo usa el instalador al terminar)")
+	firstRun := flag.Bool("first-run", false, "Obsoleto: equivale a --setup-mode=install. Se mantiene para los instaladores anteriores a la v1.9.0")
+	setupMode := flag.String("setup-mode", "", "install|update: muestra el diálogo que confirma la instalación o la actualización (lo usa el instalador al terminar)")
+	setupID := flag.String("setup-id", "", "Uso interno: identificador de la ejecución del instalador, para confirmarla una sola vez")
 	flushRestart := flag.Bool(flushRestartFlagName, false, "Uso interno: limpieza profunda antes de arrancar, tras un reinicio pedido desde el System Tray")
 	flag.Parse()
 
@@ -103,12 +113,17 @@ func main() {
 	// termina: así la entrada de auto-arranque nunca apunta a un archivo que
 	// pueda desaparecer. El flag --relaunched corta cualquier bucle.
 	if !*noInstall && !*relaunched {
-		// El flag de bienvenida viaja con el relanzado: si el instalador acaba
-		// de lanzar el binario desde una carpeta temporal, la ventana debe
-		// abrirla la instancia definitiva, no la que está a punto de morir.
+		// Los flags del instalador viajan con el relanzado: si el instalador
+		// acaba de lanzar el binario desde una carpeta temporal, el diálogo debe
+		// abrirlo la instancia definitiva, no la que está a punto de morir.
 		var passthrough []string
-		if *firstRun {
+		if *setupMode != "" {
+			passthrough = append(passthrough, "--setup-mode="+*setupMode)
+		} else if *firstRun {
 			passthrough = append(passthrough, "--first-run")
+		}
+		if *setupID != "" {
+			passthrough = append(passthrough, "--setup-id="+*setupID)
 		}
 		if EnsurePermanentLocation(passthrough...) {
 			log.Println("Instancia temporal finalizada tras reubicar el agente")
@@ -119,6 +134,14 @@ func main() {
 	// Repara la entrada de auto-arranque en cada arranque (ruta permanente y
 	// entre comillas dobles), salvo que el usuario la haya desactivado.
 	EnsureAutostartRegistered()
+
+	// Y el acceso directo del Menú de Inicio, que es lo que hace que el
+	// programa se encuentre escribiendo su nombre. Va aquí y no sólo en el
+	// instalador porque el binario también puede haberse ejecutado a mano: la
+	// reubicación de arriba lo deja en Program Files, donde el buscador de
+	// Windows no lo ve, y sin esta llamada el agente quedaba instalado y
+	// perfectamente invisible.
+	EnsureStartMenuShortcut()
 
 	// The welcome dialog runs in its own goroutine: MessageBoxW is modal and
 	// blocks until the operator dismisses it, while systray.Run() below takes
@@ -132,8 +155,8 @@ func main() {
 	// long as the toast lives. The MessageBoxW already states the agent is
 	// running in the background, and the tray tooltip reads "Operativo (:9100)"
 	// from the moment the socket accepts connections.
-	if *firstRun {
-		go ShowFirstRunWelcome()
+	if *setupMode != "" || *firstRun {
+		go ShowSetupDialog(SetupDialogRequest{Mode: *setupMode, RunID: *setupID})
 	}
 
 	systray.Run(onReady, onExit)
@@ -162,12 +185,18 @@ func onReady() {
 		log.Fatalf("Error resolviendo puerto: %v", err)
 	}
 
+	agentPort.Store(int64(port))
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	autostartEnabled := isAutostartEnabled()
 	mAutostart := systray.AddMenuItemCheckbox("Iniciar con el Sistema", "Iniciar automáticamente con el sistema", autostartEnabled)
 
 	mCopyToken := systray.AddMenuItem("Copiar Token de Seguridad", "Copia el token del agente al portapapeles")
+
+	// Diagnóstico de la ticketera. Va antes del separador porque es una acción
+	// de uso diario —el primer paso de cualquier incidencia de impresión—, no
+	// una de las dos que terminan el proceso.
+	buildTestTicketMenu()
 
 	systray.AddSeparator()
 

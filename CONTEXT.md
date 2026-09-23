@@ -2,9 +2,9 @@
 
 ## Estado Actual
 
-**Fase 13: Enrutador de Descubrimiento y Contrato de Impresión** — Finalizado (v1.8.0)
+**Fase 15: Instalador de Grado Comercial y Ticket de Autodiagnóstico** — Finalizado (v1.9.0)
 
-Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código).
+Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC/POS), 4 (Seguridad, Autostart, Build), 5 (CORS dinámico, Health, Monitoreo de cola), 6 (Port fallback, Self-healing, Certificados SSL nativos, Instalador Inno Setup), 7 (Impresión nativa de PDF en impresoras convencionales), 8 (CREATE_NO_WINDOW anti-parpadeo, copiar token al portapapeles, autostart con ruta entre comillas), 9 (Ruta permanente en Program Files, auto-reubicación y reparación del registro, páginas de códigos ESC/POS con transcodificación de acentos), 10 (Página de códigos CP1252 por defecto, icono del gato tuxedo embebido, ventana de bienvenida post-instalación), 11 (Icono dinámico gris → verde ligado al socket, transcodificación con `golang.org/x/text/encoding/charmap`, cierre limpio del agente), 12 (Elevación UAC estricta, desinstalador que preserva el estado del vínculo con el POS, accesos directos gestionados e infraestructura de firma de código), 13 (Enrutador de descubrimiento público y contrato de impresión), 14 (Modo compatible de codificación, perfiles por impresora y ticket de calibración de acentos), 15 (Instalador reparado y con metadatos de versión, diálogos de bienvenida/actualización/éxito, ticket de prueba con datos técnicos).
 
 **Añadido después de la Fase 12:**
 
@@ -36,6 +36,58 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
   endpoints de impresión, y la etiqueta divergente del struct hacía que cada
   arqueo de caja recibiera un `400`. Ver "Endpoint `POST /api/print/pdf` —
   Detalle Técnico".
+- **El agente no creaba ningún acceso directo** (corregido en la v1.9.1). El
+  único que existía lo creaba la sección `[Icons]` del instalador, y el
+  instalador no compilaba, así que ninguna caja llegó a tener uno. Ejecutar el
+  `.exe` a mano deja el binario en `C:\Program Files\CronosAgent` —se reubica
+  solo— pero **el buscador del Menú de Inicio sólo indexa los `.lnk` de
+  `Start Menu\Programs`, nunca un `.exe` suelto**: el programa quedaba instalado
+  y a la vez imposible de encontrar. Ahora lo crea el propio agente en cada
+  arranque, como ya reparaba su entrada de auto-arranque. Ver "Acceso Directo
+  del Menú de Inicio".
+- **`installer/setup.iss` no compilaba** (corregido en la v1.9.0). La reescritura
+  de la Fase 12 dejó las llamadas pero borró el `#define AppGuid` y cuatro
+  funciones de `[Code]` (`PreviousInstallFound`, `PreviousLocation`,
+  `StopRunningAgent`, `CopyInstallLog`). ISCC habría fallado en la primera línea
+  que las usa, y sin `AppId` **no hay clave de desinstalación**: es exactamente
+  la entrada que Windows lee para listar el programa en "Agregar o quitar
+  programas" y para poder eliminarlo. Ver "Validación Estática del Instalador".
+- **El `.exe` no llevaba VERSIONINFO** (corregido en la v1.9.0). El `.syso` sólo
+  embebía el icono y el manifiesto, así que la pestaña *Propiedades → Detalles*
+  del binario salía vacía. Ahora se genera con `goversioninfo` a partir de
+  `versioninfo.json`. Ver "Recursos Win32 del Ejecutable".
+- **El `.iss` no tenía BOM** (corregido en la v1.9.0). Inno Setup 6 lee el script
+  como UTF-8 sólo si empieza por el BOM; sin él usa la página ANSI del sistema y
+  los acentos de los mensajes en español salían corruptos en pantalla.
+- **Diálogos de instalación diferenciados** (v1.9.0): el instalador abre con un
+  cuadro de bienvenida en un equipo limpio o de actualización —nombrando las dos
+  versiones— si detecta una instalación previa, y al terminar el propio agente
+  confirma el resultado con el mensaje que corresponde. Ver "Diálogos del
+  Instalador".
+- **Ticket de prueba** (v1.9.0, `POST /api/print/test` y el submenú "Imprimir
+  Ticket de Prueba" de la bandeja): imprime los datos técnicos de la impresora
+  —controlador, puerto, cola—, el estado de la codificación, una regla de
+  columnas y una muestra de cada clase de carácter. Ver "Ticket de
+  Autodiagnóstico".
+- **Modo compatible de codificación** (v1.9.0, `escpos_compatibility`, default
+  `true`): el ticket se restringe a los caracteres que PC437, PC850 y PC858
+  codifican con **el mismo byte**, de modo que da igual qué tabla tenga activa la
+  impresora. En español eso es todo menos `Á Í Ó Ú`, que se pliegan a ASCII. Un
+  ticket deja de poder imprimir basura en cualquier hardware, y `Michoacán`
+  conserva su acento en vez de salir `Michoacan`. Ver "Modo Compatible".
+- **Página por defecto de vuelta a PC858** (v1.9.0): CP1252 resultó ser la peor
+  opción cuando la impresora ignora el `ESC t n` —no comparte ni un byte con
+  PC437, así que se pierden *todos* los acentos y no sólo los cuatro
+  conflictivos—. Ver "Por qué PC858 y no CP1252".
+- **Perfiles por impresora y ticket de calibración** (v1.9.0, `printers` en
+  `config.json`, `POST /api/print/calibrate`): ESC/POS no tiene ninguna orden
+  para preguntarle a una impresora qué tabla decodifica, así que el agente
+  imprime un ticket con todos los candidatos numerados y el operador devuelve el
+  número de la línea correcta. Una impresora verificada desactiva el pliegue y
+  recupera `Á Í Ó Ú`. Ver "Calibración de Acentos".
+- **Reafirmación de la página tras cada `ESC @`** (v1.9.0): un reinicio a mitad
+  de ticket restauraba la página de fábrica y todo lo impreso después salía con
+  la tabla equivocada. Ahora la selección se reinyecta detrás de cada `ESC @`.
 - **Enrutador partido en superficie pública y superficie protegida**: el
   descubrimiento (`GET /health` y `GET /api/health`) responde sin token, y el
   resto de `/api/` se monta detrás del Auth como un subárbol fail-closed. CORS
@@ -77,17 +129,24 @@ Fases completadas: 1 (Inicialización), 2 (Autodescubrimiento), 3 (Motor RAW ESC
 | Datos de runtime (Win) | `%LOCALAPPDATA%\CronosAgent\` | Program Files es de sólo lectura para el usuario estándar que ejecuta el agente |
 | Codificación ESC/POS | `ESC t n` + transcodificación UTF-8 → página de códigos | Las ticketeras no entienden UTF-8; CP437 (fábrica) ni siquiera contiene Á Í Ó Ú |
 | Preámbulo del ticket | `ESC @` (`1B 40`) + `ESC t n`, en ese orden | El reinicio deja la impresora en un estado conocido; va **antes** de la selección porque `ESC @` restaura la página de fábrica y anularía una selección previa |
-| Pliegue de acentos | Conmutable con `strip_accents` (default `true`) | Es un fallback, no una verdad universal: en el hardware que respeta el `ESC t n` conviene apagarlo e imprimir la `ñ` de verdad |
+| Pliegue total de acentos | Conmutable con `strip_accents` (default `false` desde la v1.9.0) | Sacrificaba la `á` de `Michoacán` para no equivocar la `Á` de `Ánimo`. Lo sustituye el modo compatible, que sólo pliega lo que la impresora puede equivocar |
+| Modo compatible | `escpos_compatibility` (default `true`) | El agente no puede saber qué tabla tiene activa la impresora, así que emite sólo los bytes en los que PC437, PC850 y PC858 coinciden. Es correcto en cualquier hardware sin configurar nada |
+| Perfil por impresora | `printers` en `config.json` + `POST /api/print/calibrate` | La página de códigos es una propiedad del hardware, no de la instalación: una caja con dos ticketeras necesita dos respuestas. Verificar una desbloquea `Á Í Ó Ú` |
 | Valores por defecto de codificación | `DefaultEncodingOptions()` | Un único punto de partida para config, API y tests: un campo nuevo no puede quedarse en `false` por olvido en un constructor |
-| Página por defecto | **CP1252** (`ESC t 16` = `1B 74 10`) desde la v1.5.0 | Sus bytes son los de Latin-1, que es lo que espera una ticketera conectada a Windows. Con CP850 la `Á` viaja como `0xB5` y sale como otro símbolo en cuanto el hardware pierde la selección de página |
+| Página por defecto | **PC858** (`ESC t 19` = `1B 74 13`) desde la v1.9.0 | Comparte con PC437 —la página de fábrica— el byte de todos los acentos del español menos cuatro. CP1252 (v1.5.0–v1.8.0) no comparte ninguno: cuando la impresora ignora la selección, falla el ticket entero en vez de cuatro caracteres |
 | Numeración de páginas | `escpos_code_page_id` en `config.json` | Válvula de escape para clones que numeran sus tablas fuera del estándar Epson, sin recompilar |
 | Tablas de códigos | `golang.org/x/text/encoding/charmap` | Implementación de referencia del proyecto Go: ~800 líneas de tablas propias sustituidas por cuatro alias que nadie tiene que revisar |
-| Transcodificación | `charmap.Windows1252.NewEncoder().Bytes()` por tramo de texto | Un ticket RAW no es una cadena: sólo se codifican los tramos de texto, no los comandos ni los logos |
+| Transcodificación | `charmap.CodePage858.NewEncoder().Bytes()` por tramo de texto | Un ticket RAW no es una cadena: sólo se codifican los tramos de texto, no los comandos ni los logos |
 | Acentos (fallback) | NFD + descarte de la categoría `Mn` (`golang.org/x/text/unicode/norm` + `unicode`) | Parte del hardware ignora el `ESC t n`: una `A` sin tilde es el único byte que imprime igual en cualquier tabla |
 | Icono del agente | `//go:embed app_icon.ico` + `systray.SetIcon` | El binario se sobrescribe en cada actualización: un icono en archivo suelto se perdería |
 | Estado en la bandeja | Icono gris → verde tras `net.Listen` | El color confirma que el socket acepta conexiones, no que se haya lanzado una goroutine |
 | Cierre del agente | `srv.Shutdown(ctx)` + `listener.Close()` explícito en `onExit` + canal `agentDone` | Libera el puerto antes del `os.Exit(0)` y no corta un ticket a medio enviar al spooler |
-| Recursos Win32 | `rsrc_windows_amd64.syso` (icono + manifiesto) | Icono en Explorador/Alt+Tab y botones con estilo moderno (Common Controls 6) |
+| Recursos Win32 | `rsrc_windows_amd64.syso` (icono + manifiesto + **VERSIONINFO**) | Icono en Explorador/Alt+Tab, botones con estilo moderno (Common Controls 6) y una pestaña *Detalles* con versión, empresa y copyright: es lo primero que mira un departamento de sistemas antes de autorizar un `.exe` |
+| Metadatos del `.exe` | `versioninfo.json` + `goversioninfo` | `rsrc` no sabe generar VERSIONINFO. Un solo generador produce ahora icono, manifiesto y versión, y `versioninfo.json` es texto revisable en el repositorio |
+| Validación del instalador | Tests de Go sobre `installer/setup.iss` | ISCC sólo corre en Windows, así que nada en CI miraba ese script: por eso se publicó una versión que no compilaba. Ver "Validación Estática del Instalador" |
+| Acceso directo | Lo crea el agente (`EnsureStartMenuShortcut`), no sólo el instalador | El binario también se ejecuta a mano, y entonces no hay instalador que lo cree. Un `.exe` en Program Files no lo indexa el buscador de Windows: sin `.lnk` el programa es invisible |
+| Escritura del `.lnk` | COM (`IShellLinkW` + `IPersistFile`) | PowerShell puede estar bloqueado por directiva en una caja, y escribir el formato binario a mano no es verificable sin Windows. `ole32.dll` es parte del sistema |
+| Diagnóstico de impresión | `POST /api/print/test` + submenú de la bandeja | Una foto del ticket de prueba responde de una vez las preguntas que si no exigen una sesión remota: controlador, puerto, página de códigos y si la impresora está calibrada |
 | Ventana de bienvenida | `MessageBoxW` de `user32.dll` vía `syscall.NewLazyDLL` | La ventana Win32 a medida fallaba en silencio en producción; `MessageBoxW` es parte del sistema operativo: sin clase de ventana, sin bucle de mensajes, sin CGO |
 | Ilustraciones | Generadas por código (`tools/genassets`) | Recursos reproducibles y auditables en vez de binarios opacos |
 | Logs | Rotación nativa con `RotatingLogger` | Sin dependencias externas, 10MB max, 3 backups |
@@ -113,9 +172,23 @@ cronos-pos-agent/
 ├── selfheal_windows.go  # Build tag: windows — clonado del proceso con CREATE_NO_WINDOW + DETACHED_PROCESS
 ├── selfheal_darwin.go   # Build tag: darwin — clonado del proceso con Setsid (sesión propia)
 ├── printer.go           # Tipos compartidos (PrinterInfo, PrintRequest, QueueInfo, PrintJob)
+├── testticket.go        # Ticket de autodiagnóstico: datos técnicos, regla de columnas y juego de caracteres
+├── traymenu.go          # Submenú "Imprimir Ticket de Prueba" de la bandeja, con ranuras fijas
+├── startmenu.go         # Nombre del acceso directo y tipos COM (GUID + vtables) verificables por test
+├── startmenu_windows.go # Creación del .lnk del Menú de Inicio con IShellLinkW
+├── startmenu_darwin.go  # Build tag: darwin — sin Menú de Inicio, no aplica
+├── startmenu_test.go    # Offsets de las vtables COM y GUIDs contra las cabeceras
+├── versioninfo.json     # Metadatos VERSIONINFO del .exe (entrada de goversioninfo)
+├── installer_test.go    # Validación estática de setup.iss, app.manifest y versioninfo.json
+├── testticket_test.go   # Tests del ticket de prueba (ancho, juego de caracteres, codificación)
+├── firstrun_test.go     # Tests de los diálogos de instalación y actualización
 ├── escpos.go            # Motor de codificación: pliegue de diacríticos (NFD), preámbulo ESC @ + ESC t n, encoder charmap y salto de gráficos
 ├── escpos_codepages.go  # Alias de charmap (CP1252/CP850/CP858/CP437) + fallback ASCII
-├── escpos_test.go       # Tests del motor de codificación (27 casos)
+├── escpos_compat.go     # Modo compatible: subconjunto seguro PC437 ∩ PC850 ∩ PC858 y pliegue selectivo
+├── printer_profiles.go  # Perfiles por impresora, modelos conocidos y ticket de calibración
+├── escpos_test.go       # Tests del motor de codificación
+├── escpos_compat_test.go # Tests del modo compatible y de la reafirmación de página
+├── printer_profiles_test.go # Tests de perfiles, modelos conocidos y ticket de calibración
 ├── server_test.go       # Tests del enrutador: superficie pública sin token, /api/ protegido, CORS y contrato de los endpoints de impresión
 ├── paths_windows.go     # Build tag: windows — ruta permanente, reubicación, directorio de datos
 ├── paths_darwin.go      # Build tag: darwin — directorio de datos y reparación del LaunchAgent
@@ -134,7 +207,7 @@ cronos-pos-agent/
 ├── app_icon_green.png   # Ídem para la barra de menús de macOS
 ├── welcome_cat.png      # Ilustración 880×440: el gato jugando con la ticketera — ya NO embebida (material de marca)
 ├── app.manifest         # Manifiesto Win32: asInvoker + Common Controls 6.0
-├── rsrc_windows_amd64.syso # Recurso Win32 generado (icono + manifiesto) que enlaza el .exe
+├── rsrc_windows_amd64.syso # Recurso Win32 generado (icono + manifiesto + VERSIONINFO) que enlaza el .exe
 ├── tools/
 │   └── genassets/
 │       └── main.go      # Generador de los 3 iconos y de welcome_cat.png (dibujo por código)
@@ -181,24 +254,36 @@ con el POS (ver "Desinstalación — política de preservación de estado").
   ],
   "update_url": "https://pos-app.tech/agent/version.json",
   "port": 9100,
-  "escpos_code_page": "cp1252",
+  "escpos_code_page": "cp858",
   "escpos_transcode": true,
-  "strip_accents": true,
+  "strip_accents": false,
+  "escpos_compatibility": true,
   "escpos_initialize": true,
+  "printers": {
+    "EPSON TM-T20III Receipt": {
+      "code_page": "cp858",
+      "code_page_id": 19,
+      "verified": true,
+      "source": "calibration",
+      "updated_at": "2026-09-18T13:08:51Z"
+    }
+  },
   "autostart": true
 }
 ```
 
 | Propiedad | Tipo | Default | Descripción |
 |---|---|---|---|
-| `config_version` | `int` | `2` | Versión del **esquema** del archivo (no la del agente). Dispara las migraciones una sola vez |
+| `config_version` | `int` | `3` | Versión del **esquema** del archivo (no la del agente). Dispara las migraciones una sola vez |
 | `api_token` | `string` | UUID v4 auto | Token de autenticación para header `X-Cronos-Agent-Token` |
 | `allowed_origins` | `string[]` | 5 orígenes | Lista de orígenes CORS permitidos |
 | `update_url` | `string` | pos-app.tech | URL del JSON de versión para auto-updates |
 | `port` | `int` | `9100` | Puerto preferido. Si está ocupado, busca el siguiente libre (9101–9110) |
-| `escpos_code_page` | `string` | `"cp1252"` | Página de códigos que se activa en la ticketera: `cp1252`, `cp850`, `cp858`, `cp437` o `none` |
+| `escpos_code_page` | `string` | `"cp858"` | Página de códigos que se activa en la ticketera: `cp858`, `cp850`, `cp1252`, `cp437`, `auto` (alias de `cp858`) o `none` |
 | `escpos_transcode` | `bool` | `true` | Convierte el texto UTF-8 a los bytes de esa página de códigos con el encoder de `charmap` |
-| `strip_accents` | `bool` | `true` | Pliega los diacríticos antes de codificar (`Ánimo` → `Animo`). Es el fallback para el hardware que ignora el `ESC t n`; en `false` los acentos se imprimen de verdad |
+| `strip_accents` | `bool` | `false` | Pliega **todos** los diacríticos antes de codificar (`Ánimo` → `Animo`, `Michoacán` → `Michoacan`). Desde la v1.9.0 lo sustituye el modo compatible; queda para la impresora que no imprima bien ni siquiera el subconjunto seguro |
+| `escpos_compatibility` | `bool` | `true` | Restringe el ticket a los bytes en los que PC437, PC850 y PC858 coinciden, plegando a ASCII los cuatro que no (`Á Í Ó Ú`). Se apaga solo en las impresoras con perfil verificado. Ver "Modo Compatible" |
+| `printers` | `object` | ausente | Lo que el agente sabe de cada impresora: `{"<nombre de la cola>": {"code_page", "code_page_id", "verified", "source", "updated_at"}}`. Lo escribe la calibración. Ver "Calibración de Acentos" |
 | `escpos_initialize` | `bool` | `true` | Antepone `ESC @` (`1B 40`) a cada trabajo RAW. En `false` sólo se envía el `ESC t n` |
 | `escpos_code_page_id` | `int` | ausente | Sustituye el `n` de `ESC t n` por un valor concreto (0–255) manteniendo la tabla de `escpos_code_page`. Sólo para ticketeras con numeración propia |
 | `autostart` | `bool` | `true` | Preferencia de arranque con el sistema. El agente sólo repara la entrada del registro si es `true` |
@@ -228,9 +313,12 @@ intacto el `api_token`.
 | Migración | Qué hace | Por qué |
 |---|---|---|
 | v1 → v2 | `escpos_code_page: "cp850"` → `"cp1252"` | Ese `cp850` no lo eligió ningún operador: lo escribió el propio agente como valor por defecto en su primer arranque. Sin la migración, las cajas ya instaladas seguirían imprimiendo los acentos mal tras actualizar |
+| v2 → v3 | `escpos_code_page: "cp850"` o `"cp1252"` → `"cp858"`; `strip_accents: true` → `false`; se añade `escpos_compatibility: true` | CP1252 no comparte ni un byte con PC437, así que en la impresora que ignora el `ESC t n` fallan *todos* los acentos. PC858 más el modo compatible falla en ninguno, y el pliegue total deja de ser necesario |
 
-Una página **distinta** de `cp850` (por ejemplo `cp858`, `cp437` o `none`) sí es
-una decisión deliberada del integrador y se respeta.
+La regla de toda migración es la misma: **sólo se toca el valor que escribió el
+propio agente como defecto de su época**. Una página distinta de ésas (por
+ejemplo `cp437` o `none`), o un `strip_accents` puesto a mano en un archivo que
+ya era del esquema v3, lo decidió una persona mirando un ticket y se respeta.
 
 ## Conmutación Dinámica de Puertos
 
@@ -545,11 +633,202 @@ ISCC.exe installer/setup.iss
 | 4 | Crea los accesos directos | Menú de Inicio (`{group}`) y Escritorio (`{autodesktop}`) — comunes a todos los usuarios en instalación elevada |
 | 5 | Genera certificados SSL | `--generate-certs` en modo oculto y con `runasoriginaluser` |
 | 6 | Registra el autostart | `HKCU\...\Run` → `CronosPOSAgent` con la ruta **entre comillas dobles** |
-| 7 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--first-run` y **sin** `runhidden`, para que se vea el diálogo de bienvenida; en `/VERYSILENT`, sin el flag y con `runhidden` |
+| 7 | Lanza el agente | En segundo plano y con `runasoriginaluser`. En instalación atendida con `--setup-mode=install\|update --setup-id=<id>` y **sin** `runhidden`, para que se vea el diálogo final; en `/VERYSILENT`, sin los flags y con `runhidden` |
+
+El paso 0, antes de todos ellos, es el diálogo que abre `InitializeSetup` y que
+puede cancelar la instalación sin haber tocado nada. Ver "Diálogos del
+Instalador".
 
 El instalador usa el mismo gato tuxedo como icono (`SetupIconFile=..\app_icon.ico`),
 y "Aplicaciones instaladas" lo muestra a través del recurso Win32 del propio
 ejecutable (`UninstallDisplayIcon={app}\cronos-pos-agent.exe`).
+
+### Diálogos del Instalador
+
+Una instalación atendida muestra **exactamente dos cuadros de diálogo**, y son
+toda la interfaz de usuario del instalador: el asistente va con
+`DisableWelcomePage`, `DisableDirPage`, `DisableReadyPage` y
+`DisableFinishedPage`, porque no hay ninguna decisión que pedirle al operador de
+una caja.
+
+**1. Antes de tocar nada — `InitializeSetup` → `ShowOpeningDialog`.**
+El instalador lee la clave de desinstalación (`DetectPreviousInstall`, que mira
+HKLM, HKCU y sus vistas de 32 bits) y muestra uno de dos mensajes:
+
+| Situación | Mensaje |
+|---|---|
+| Equipo limpio | Bienvenida: qué es el agente, que se ejecuta en segundo plano, que arranca solo y dónde se gestiona |
+| Instalación previa | Actualización: **nombra las dos versiones** y la ruta, y responde la única pregunta que plantea una actualización — que se conservan el token, los certificados y la configuración de impresoras |
+
+Los dos son `MB_OKCANCEL`: cancelar aborta con el equipo intacto. Se usa
+`SuppressibleMsgBox` y no `MsgBox` para que un despliegue con
+`/SUPPRESSMSGBOXES` se responda solo en vez de quedarse esperando en una
+pantalla que nadie mira, y además hay una guarda por `WizardSilent`.
+
+**2. Al terminar — lo muestra el agente, no el instalador.**
+El último `[Run]` lanza el binario con `--setup-mode=install|update`, y es el
+agente el que abre el `MessageBoxW` de confirmación con el texto que
+corresponda. Está hecho así a propósito: un diálogo pintado por el agente es la
+única confirmación que **además demuestra que el agente está corriendo**, que es
+lo que el operador necesita saber y lo que el instalador no puede garantizar —
+su barra de progreso sólo dice que los archivos se copiaron.
+
+**`--setup-id`: confirmar una vez por ejecución del instalador.**
+El agente guarda en `welcome-shown` el identificador de la ejecución que ya
+confirmó. Eso resuelve dos casos a la vez: el relanzado desde la ruta permanente
+encuentra el id ya escrito y se queda callado, y la siguiente ejecución del
+instalador —incluida una reinstalación sobre la **misma** versión— trae un id
+distinto y vuelve a confirmar. Antes el marcador guardaba la versión, así que
+una reinstalación de la misma versión terminaba sin ningún mensaje.
+
+Un despliegue silencioso (`/VERYSILENT`) no muestra ninguno de los dos: no hay
+nadie delante de esas pantallas para cerrarlos.
+
+### Validación Estática del Instalador
+
+`installer_test.go` comprueba `setup.iss`, `app.manifest` y `versioninfo.json`
+desde el propio `go test`.
+
+**Por qué hizo falta.** El compilador de Inno Setup sólo corre en Windows, así
+que nada en integración continua miraba nunca ese script — y se notó: **la
+versión publicada como 1.8.0 no compilaba**. Una reescritura había borrado el
+`#define AppGuid` y cuatro funciones de `[Code]` dejando todas las llamadas en
+su sitio, de modo que ISCC habría fallado en la primera línea que las usa. La
+consecuencia en una caja no es sutil: sin `AppId` no existe la clave de
+desinstalación, que es justo la entrada que Windows lee para listar el programa
+en "Agregar o quitar programas" y para poder eliminarlo.
+
+Qué se comprueba:
+
+| Test | Qué atrapa |
+|---|---|
+| `TestInstallerScriptIsUTF8WithBOM` | Inno 6 lee el `.iss` como UTF-8 **sólo** si empieza por el BOM; sin él usa la página ANSI y los mensajes en español salen corruptos en pantalla |
+| `TestInstallerPreprocessorDefines` | Un `{#Nombre}` sin su `#define` — el fallo exacto de la 1.8.0 |
+| `TestInstallerAppIdResolvesToGUID` | Que `AppId` sea un GUID literal y que estén `Uninstallable` y `CreateUninstallRegKey` |
+| `TestInstallerCodeConstantsExist` | Que cada `{code:Nombre}` tenga su `function Nombre(Param: String): String` |
+| `TestInstallerNoUseBeforeDeclaration` | Pascal Script resuelve en una pasada: una función llamada por encima de su declaración no compila |
+| `TestInstallerBlocksAreBalanced` | `begin`/`end` descuadrados |
+| `TestVersionIsConsistentAcrossArtifacts` | Que `AgentVersion`, `#define AppVersion`, `app.manifest` y `versioninfo.json` digan la misma versión |
+| `TestInstallerCarriesVersionMetadata` | Que el `Setup.exe` lleve versión, empresa, descripción, copyright e iconos |
+
+No sustituyen a ISCC y no lo pretenden: atrapan la clase de defecto que se
+publicó — una referencia sin nada detrás, una versión que se descoordinó y una
+codificación que convierte los mensajes en mojibake.
+
+### Acceso Directo del Menú de Inicio
+
+Implementado en **`startmenu_windows.go`**. Es lo que hace que el programa se
+encuentre escribiendo su nombre, y hasta la v1.9.1 **no existía en ninguna
+caja**.
+
+**El agujero que cierra.** El único acceso directo lo creaba la sección
+`[Icons]` del instalador, y ese script no compilaba. Lo que el agente sí hacía
+por su cuenta era reubicarse a una ruta permanente
+(`EnsurePermanentLocation`), lo que dejaba la caja en el peor de los dos
+mundos: el programa **está** instalado, en `C:\Program Files\CronosAgent`, y aun
+así Windows no lo encuentra, porque el buscador del Menú de Inicio indexa los
+`.lnk` de `Start Menu\Programs` y **nunca un `.exe` suelto**. Escribir "Cronos"
+no devolvía nada y el operador tenía que ir a buscar el ejecutable a mano.
+
+Por eso lo crea ahora el propio agente, igual que repara su entrada de
+auto-arranque en cada arranque. Así funciona en los dos caminos que puede
+seguir una caja —instalada con el instalador, o con el `.exe` ejecutado
+directamente— y no sólo en el primero.
+
+**Una sola entrada.** El agente busca antes de crear, en las cuatro
+combinaciones posibles: Menú de Inicio del usuario y el común, en la raíz de
+`Programas` y dentro de un grupo con el nombre del producto (el formato que
+usaban versiones anteriores del instalador). Si encuentra uno, no escribe nada.
+El `[Icons]` del instalador se cambió además a `{autoprograms}\{#AppName}` —la
+raíz, sin grupo— para que sea exactamente la misma ruta que usaría el agente, y
+`TestInstallerShortcutMatchesTheAgentShortcut` falla si los dos nombres se
+separan.
+
+**Por qué se busca antes por el usuario.** El `.lnk` se escribe en
+`%APPDATA%\...\Start Menu\Programs`, que siempre es escribible sin elevación y
+está indexado para el operador que está de verdad en la caja. El común
+(`%ProgramData%`) sólo se lee, porque escribir ahí exige administrador.
+
+**Búsqueda.** El nombre del acceso directo es el nombre del producto,
+`Cronos POS Agent`, y eso es lo que lo hace encontrable: el buscador compara
+cada palabra de la consulta con las palabras del nombre, de modo que "Cronos",
+"agent", "POS" y "Cronos agent" llegan todas al mismo elemento.
+`TestStartMenuShortcutIsFindableByName` fija ese contrato.
+
+**Por qué COM y no PowerShell.** Un acceso directo de Windows es un formato
+binario, y la forma soportada de escribirlo es el objeto `ShellLink` del propio
+shell. Se descartaron dos alternativas:
+
+- `New-Object -ComObject WScript.Shell` desde PowerShell son tres líneas, pero
+  el agente corre en cajas donde AppLocker o una directiva de grupo pueden
+  bloquear `powershell.exe`, y éste es justo el paso del que depende que el
+  operador pueda encontrar el programa.
+- Escribir el `.lnk` byte a byte está documentado (MS-SHLLINK), pero una
+  cabecera sutilmente mal puesta produce un acceso directo que el Explorador se
+  niega a abrir en silencio, y nada en este repositorio podría probarlo.
+
+`ole32.dll` no tiene ninguno de los dos problemas: es parte del sistema, y el
+shell escribe un acceso directo correcto por construcción.
+
+**Las vtables se verifican por test.** El orden de los campos de una vtable
+**es** la definición de la interfaz: un campo insertado o movido llama a un
+método distinto del previsto —`SetPath` pasaría a ser `Resolve`— y el acceso
+directo saldría corrupto o tumbaría el proceso. Como este código sólo compila
+en Windows y aquí no hay ninguna máquina Windows, los tipos COM viven en
+`startmenu.go` **sin build tag** y `TestShellLinkVtableLayout` comprueba en
+cualquier plataforma, con `unsafe.Offsetof`, que cada método cae en la ranura
+que dicen las cabeceras de COM. `TestShellLinkGUIDs` hace lo propio con los tres
+GUID: un dígito mal y `CoCreateInstance` devuelve "clase no registrada" y no se
+crea ningún acceso directo, en todas las máquinas y sin decir nada.
+
+**Qué pasa al hacer doble clic con el agente ya en marcha.** Arranca una
+segunda instancia, `killOrphanInstances()` mata la anterior y la nueva toma el
+relevo. No quedan dos gatos en la bandeja ni dos procesos peleando por el
+puerto.
+
+### Volver a arrancar tras un reinicio
+
+Son dos mecanismos independientes, y conviene no confundirlos porque fallan por
+motivos distintos:
+
+| Mecanismo | Qué hace | Dónde vive |
+|---|---|---|
+| Auto-arranque | El agente vuelve **solo** al iniciar sesión | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → `CronosPOSAgent` |
+| Acceso directo | El operador puede **encontrarlo y abrirlo** si no volvió | `Start Menu\Programs\Cronos POS Agent.lnk` |
+
+El auto-arranque es **por usuario**: la entrada vive en `HKCU`, la rama del
+usuario que ejecutó el agente. De ahí el fallo más habitual y más difícil de
+ver: si alguien lanzó el `.exe` con **"Ejecutar como administrador"**, la
+entrada queda escrita en la rama del *administrador*, y en la sesión del
+operador no hay nada que arranque. Desde la v1.9.1 el log lo dice explícitamente
+(`[autostart] Auto-arranque registrado como "..." (usuario X, HKCU\...)`), y el
+ticket de prueba imprime los dos estados —"Inicio auto." y "Acceso dir."— para
+que una foto responda las dos preguntas que plantea una caja después de
+reiniciarse.
+
+El instalador evita ese fallo por su cuenta: lanza el agente con
+`runasoriginaluser`, de modo que la entrada se escribe en la rama del operador
+aunque Setup corra elevado.
+
+### Entrada en "Agregar o quitar programas"
+
+Inno construye la clave de desinstalación a partir de `AppId`, y de ahí salen
+todos los campos que Windows muestra:
+
+| Campo en Windows | De dónde sale |
+|---|---|
+| Nombre | `AppName` / `UninstallDisplayName` |
+| Versión | `AppVersion` |
+| Editor | `AppPublisher` |
+| Icono | `UninstallDisplayIcon` → el recurso Win32 del propio `.exe` |
+| Enlace de ayuda | `AppSupportURL` |
+| Acerca de | `AppPublisherURL` |
+| Tamaño | Calculado por Inno a partir de los archivos instalados (`EstimatedSize`) |
+
+La clave se escribe en HKLM en una instalación elevada y en HKCU en una sin
+elevar; las dos aparecen en *Configuración → Aplicaciones → Aplicaciones
+instaladas*. Además del panel de Windows, la desinstalación está en el Menú de
+Inicio como "Desinstalar Cronos POS Agent".
 
 ### Elevación de privilegios (UAC) — `PrivilegesRequired=admin`
 
@@ -799,6 +1078,58 @@ Peor aún: la página de fábrica de la práctica totalidad de las ticketeras es
 `Á`, `Í`, `Ó` y `Ú` no existen en esa tabla, así que no hay byte que enviar —
 sólo cambiar de página de códigos resuelve el caso.
 
+### Por qué no basta con seleccionar la página
+
+Para que un acento llegue intacto al papel tienen que coincidir **tres cosas**, y
+el agente sólo controla la primera:
+
+1. los bytes que el agente escribe en el spooler,
+2. la tabla que el firmware tiene activa cuando los decodifica,
+3. los glifos que la ROM de fuentes de la impresora contiene de verdad.
+
+`ESC t n` es una **petición, no un contrato**. Buena parte del hardware del
+mercado la ignora, la numera de otra forma que el estándar de Epson, o
+sencillamente no tiene más tabla que la PC437 con la que arrancó. En esas
+impresoras no existe ningún byte que imprima `Á`, y ninguna astucia con páginas
+de códigos lo arregla.
+
+**El caso real (ticket del 18/09/2026).** El ticket salió con
+`╡nimo, ya falta menos para navidad` y, tres líneas más arriba, con
+`Chapultepec Sur, Morelia, Michoacán` **perfecta**. Esa asimetría identifica el
+fallo sin ambigüedad:
+
+| | `Á` | `á` |
+|---|---|---|
+| Byte que envió el agente (CP850) | `0xB5` | `0xA0` |
+| Glifo en PC850 / PC858 | `Á` | `á` |
+| Glifo en **PC437** | **`╡`** | `á` |
+
+Es decir: el agente codificaba en CP850 y la impresora decodificaba en PC437.
+Las dos tablas coinciden en la `á` minúscula (`0xA0` en ambas) y difieren en la
+`Á` mayúscula, que PC437 ni siquiera contiene. De ahí que sólo fallaran las
+mayúsculas acentuadas.
+
+### La observación que resuelve el caso
+
+PC437, PC850 y PC858 —las tres tablas que cubren todo el parque instalado de
+ESC/POS— **no difieren en todas partes**. Asignan el mismo byte a 81 de los
+caracteres por encima del ASCII, y entre ellos está casi todo lo que el español
+necesita:
+
+```
+á A0   é 82   í A1   ó A2   ú A3   ü 81   ñ A4
+Ñ A5   É 90   Ü 9A   ¿ A8   ¡ AD   º A7   ª A6   ° F8
+```
+
+Para ese subconjunto **la selección de página es irrelevante**: tenga la
+impresora la tabla que tenga, el byte decodifica al mismo glifo. En español las
+tres tablas sólo discrepan en **cuatro caracteres** —`Á`, `Í`, `Ó`, `Ú`—, que
+PC437 no contiene y cuyos bytes de PC850 (`B5`, `D6`, `E0`, `E9`) caen sobre los
+caracteres de dibujo `╡ ╓ α ┘`.
+
+Todo el modo compatible se construye sobre esa observación: **el problema
+completo de los acentos en español se reduce a cuatro caracteres.**
+
 ### La solución — cuatro mecanismos encadenados
 
 Implementados en `escpos.go` y aplicados dentro de `rawPrint()` en
@@ -807,10 +1138,14 @@ byte en el spooler. `BuildESCPOSPayload()` los aplica en este orden:
 
 | # | Mecanismo | Qué hace | Conmutable con |
 |---|---|---|---|
-| 1 | **Pliegue de diacríticos** (`sanitizeTextForPrinter`) | `Á` → `A`. Es el fallback: funciona incluso si la impresora ignora el paso 4 | `strip_accents` |
-| 2 | Transcodificación (`transcodeToCodePage`) | Lo que sobrevive al pliegue y no es ASCII (`¿ ¡ € º`) se lleva a los bytes de la página, con el encoder de `charmap` | `escpos_transcode` |
-| 3 | Reinicio (`ESC @`) | Deja la impresora en un estado conocido antes de seleccionar la página | `escpos_initialize` |
-| 4 | Selección de página (`ESC t n`) | Activa esa misma página en el hardware | `escpos_code_page` |
+| 1 | **Pliegue total de diacríticos** (`sanitizeTextForPrinter`) | `Á` → `A` y `Michoacán` → `Michoacan`. El martillo: funciona hasta en la impresora que sólo imprime ASCII | `strip_accents` (default `false`) |
+| 2 | **Modo compatible** (`foldPayloadToUniversalSafe`) | Pliega **sólo** `Á Í Ó Ú` y deja intacto todo lo que PC437, PC850 y PC858 codifican igual. Fija además la página en PC858 | `escpos_compatibility` (default `true`) |
+| 3 | Transcodificación (`transcodeToCodePage`) | Lo que sobrevive al pliegue y no es ASCII (`¿ ¡ ñ º`) se lleva a los bytes de la página, con el encoder de `charmap` | `escpos_transcode` |
+| 4 | Reinicio (`ESC @`) | Deja la impresora en un estado conocido antes de seleccionar la página | `escpos_initialize` |
+| 5 | Selección de página (`ESC t n`) | Activa esa misma página en el hardware, en la cabecera **y detrás de cada `ESC @` posterior** | `escpos_code_page` |
+
+Los pasos 1 y 2 son excluyentes: si el pliegue total está activo, el modo
+compatible no tiene nada que hacer.
 
 Los pasos 3 y 4 se escriben en la cabecera en ese orden —`1B 40` y después
 `1B 74 n`—, que es el único que funciona: ver "Preámbulo de todo ticket".
@@ -822,15 +1157,15 @@ soporte completo de español:
 
 | Página | Comando | Bytes | Cobertura |
 |---|---|---|---|
-| **CP1252** (por defecto desde la v1.5.0) | `ESC t 16` | `1B 74 10` | Windows Latin-1: Á É Í Ó Ú Ñ ñ Ü ü ¿ ¡ € |
+| **CP858** (por defecto desde la v1.9.0) | `ESC t 19` | `1B 74 13` | CP850 + símbolo €. Comparte con PC437 el byte de todos los acentos del español menos `Á Í Ó Ú` |
 | CP850 | `ESC t 2` | `1B 74 02` | Multilingual Latin-1 (por defecto hasta la v1.4.0) |
-| CP858 | `ESC t 19` | `1B 74 13` | CP850 + símbolo € |
+| CP1252 | `ESC t 16` | `1B 74 10` | Windows Latin-1 (por defecto de la v1.5.0 a la v1.8.0). **No comparte ningún byte con PC437**: ver "Por qué PC858 y no CP1252" |
 | CP437 | `ESC t 0` | `1B 74 00` | USA/Standard Europe (página de fábrica) |
 | `none` | — | — | Desactiva todo el tratamiento: los bytes viajan tal cual |
 
 > **Ojo con `1B 74 13`.** En la tabla estándar de Epson —la que respetan
-> prácticamente todos los clones— `n = 19` (`0x13`) es **PC858**, no CP1252.
-> CP1252 es `n = 16` (`0x10`), que es lo que envía el agente. Ambas páginas
+> prácticamente todos los clones— `n = 19` (`0x13`) es **PC858**, que es lo que
+> envía el agente desde la v1.9.0. CP1252 es `n = 16` (`0x10`). Las dos páginas
 > imprimen bien los acentos del español, pero colocan los caracteres en bytes
 > distintos, así que enviar `0x13` mientras se transcodifica a CP1252 imprimiría
 > basura. Si un modelo concreto numera sus tablas de otra forma, se corrige con
@@ -875,7 +1210,185 @@ impresora que arranca en su tabla de fábrica— hacía que el `ESC t n` fuese l
 única línea de defensa. Abriendo con `ESC @` el ticket no depende de lo que
 hiciera el trabajo anterior: se reinicia, se selecciona la página y se imprime.
 
-**2. Transcodificación UTF-8 → bytes de la página de códigos (encoder Windows-1252)**
+### Por qué PC858 y no CP1252
+
+De la v1.5.0 a la v1.8.0 el valor por defecto fue CP1252, con el argumento de que
+sus bytes son los de Latin-1, que es lo que "espera" una ticketera colgada de un
+equipo Windows. El campo lo desmintió: el agente escribe bytes **RAW**
+directamente en el spooler, así que ningún driver de Windows los traduce nunca, y
+una impresora que ignora el `ESC t 16` sigue decodificando en PC437.
+
+Bajo ese fallo —que es el común— CP1252 es la peor de las cuatro opciones:
+
+| El agente codifica en | La impresora decodifica en PC437 | Resultado |
+|---|---|---|
+| **CP1252** | `á` = `0xE1` → `ß`, `Á` = `0xC1` → `┴` | `Michoacßn`, `┴nimo` — **falla el ticket entero** |
+| **CP850 / PC858** | `á` = `0xA0` → `á`, `Á` = `0xB5` → `╡` | `Michoacán`, `╡nimo` — fallan **cuatro caracteres** |
+| **PC858 + modo compatible** | `á` = `0xA0` → `á`, `Á` → `A` | `Michoacán`, `Animo` — **no falla nada** |
+
+PC858 comparte con PC437 el byte de todos los acentos del español menos cuatro;
+CP1252 no comparte ninguno. Elegir la página que *más se parece* a la de fábrica
+reduce la superficie del fallo antes incluso de plegar nada.
+
+### Modo Compatible — `escpos_compatibility`
+
+Implementado en **`escpos_compat.go`**. Es el mecanismo que hace que un ticket sea
+correcto en una impresora de la que no se sabe nada.
+
+**Cómo funciona.** El subconjunto seguro no está escrito a mano: se calcula al
+arrancar recorriendo el rango `0x80–0xFF` de los tres charmaps y quedándose con
+los bytes que decodifican a la **misma runa** en los tres
+(`buildUniversalSafeRunes`). Añadir una página a `compatibilityPages` recalcula el
+subconjunto en vez de obligar a revisar 81 entradas a mano.
+
+Después, `foldToUniversalSafe` recorre el texto del ticket:
+
+- runa en el subconjunto seguro (`á é í ó ú ü ñ Ñ É Ü ¿ ¡ º ª °`) → **se conserva
+  tal cual**, con su acento;
+- runa fuera de él (`Á Í Ó Ú €`) → baja a su equivalente ASCII (`asciiFallback`:
+  `Á`→`A`, `€`→`EUR`), y si no lo tiene, a su letra base sin diacrítico, y en
+  último extremo a `?`.
+
+El modo **fija además la página en PC858**, porque el subconjunto está definido
+contra los bytes de la familia DOS: respetar una configuración `cp1252` aquí
+dejaría el pliegue pagando por una garantía que ya no da. Una instalación que
+quiera CP1252 de verdad apaga el modo (`"escpos_compatibility": false`) o
+verifica la impresora.
+
+**La propiedad que se obtiene** —y que fija el test
+`TestTicketReadsTheSameOnEveryPrinterPage`— es que el mismo payload, leído con
+cualquiera de las tres tablas, dice exactamente lo mismo:
+
+```
+--- La impresora decodifica en PC437 ---
+  ANTES : ╡nimo, ya falta menos para navidad / Michoacán / ¿Cuánto? ¡αrale! 20°
+  AHORA : Animo, ya falta menos para navidad / Michoacán / ¿Cuánto? ¡Orale! 20°
+
+--- La impresora decodifica en PC850 / PC858 ---
+  ANTES : Ánimo, ya falta menos para navidad / Michoacán / ¿Cuánto? ¡Órale! 20°
+  AHORA : Animo, ya falta menos para navidad / Michoacán / ¿Cuánto? ¡Orale! 20°
+```
+
+El coste es explícito y acotado: **cuatro caracteres pierden su acento mientras
+la impresora no esté verificada**. A cambio, el ticket no puede imprimir basura
+en ningún hardware, sin configurar nada y sin conocer el modelo.
+
+### Ticket de Autodiagnóstico — `POST /api/print/test`
+
+Implementado en **`testticket.go`**. Es el primer paso de cualquier incidencia
+de impresión.
+
+**Qué resuelve.** Cuando una caja imprime mal, la pregunta es siempre la misma y
+siempre es difícil de responder por teléfono: *¿qué hace exactamente esta
+impresora?* El operador sabe describir el síntoma pero no el controlador, ni el
+puerto, ni la página de códigos en vigor, ni si la impresora se calibró alguna
+vez. El ticket pone todo eso en papel junto a una muestra de cada carácter que
+puede llevar un ticket en español, de modo que **una foto del ticket es un
+diagnóstico completo**.
+
+Qué imprime, por bloques:
+
+| Bloque | Contenido |
+|---|---|
+| Datos de la impresora | Nombre, controlador, puerto (`USB001`, `COM3`, `\\host\cola`), entorno, si es la predeterminada y cuántos trabajos hay en cola |
+| Agente | Versión, **puerto HTTP real**, sistema operativo y el estado del auto-arranque y del acceso directo |
+| Codificación | Página activa y su `ESC t n` exacto, transcodificación, modo compatible, plegado total, reinicio y el perfil de esa impresora |
+| Ancho de línea | Una regla `....+...10....+...20` con su escala debajo, para contar la columna donde corta el papel |
+| Alfabeto, números | `A-Z`, `a-z`, `0123456789` y cifras con formato de importe |
+| Acentos y español | `á é í ó ú ü ñ ç`, sus mayúsculas, acentos graves y circunflejos, `¿` `¡`, y las cadenas reales del caso (`Michoacán`, `Ánimo`) |
+| Símbolos | La fila ASCII completa más `º ª ° · ¬ ± ¼ ½ € £` |
+| Estilos ESC/POS | Negrita, subrayado, doble ancho, doble alto, doble y las tres alineaciones |
+| Cómo leerlo | Explica, **según el modo en vigor**, por qué faltan los acentos de `Á Í Ó Ú` y qué hacer al respecto |
+
+**Pasa por el mismo camino que un ticket de venta.** `BuildTestTicket` devuelve
+texto UTF-8 con comandos de formato, **no** un payload terminado: lo entrega
+`PrintTestTicket` a `rawPrint`, que lo pasa por `BuildESCPOSPayload` con las
+opciones reales de esa impresora (perfil incluido). Una prueba que se saltara la
+tubería estaría comprobando un camino que ningún ticket de cliente recorre.
+
+**El ancho es un parámetro, no una suposición.** La longitud de línea depende del
+rollo —32 caracteres en 58 mm, 42 en 80 mm— y el agente no puede preguntárselo a
+la impresora, así que el ticket imprime la regla y el campo `columns` (24–64, por
+defecto 42) lo ajusta. Todo el texto corrido se ajusta al ancho configurado con
+`paragraph()`, y los campos del bloque técnico se alinean contando **runas y no
+bytes**: rellenar por `len(label)` descuadra la columna en cuanto una etiqueta
+lleva acento (`Versión` son siete caracteres en papel y ocho en memoria).
+
+**Desde la bandeja del sistema.** El menú tiene un submenú "Imprimir Ticket de
+Prueba" con una entrada por impresora instalada, más "Actualizar lista de
+impresoras". Las entradas son **ranuras fijas** (`traymenu.go`): `getlantern/systray`
+sabe añadir elementos pero no eliminarlos, así que un submenú reconstruido desde
+cero crecería con una entrada muerta por cada refresco. Se crean doce ranuras
+ocultas de una vez y refrescar sólo las reetiqueta y las muestra; cada una
+consulta en el momento del clic a qué impresora corresponde, que es lo que hace
+seguro refrescar mientras hay un clic en vuelo.
+
+### Calibración de Acentos — recuperar `Á Í Ó Ú`
+
+Implementada en **`printer_profiles.go`**. ESC/POS es de sentido único en lo que
+a codificación respecta: se le puede *ordenar* a una impresora que seleccione una
+página, pero **no existe ninguna orden para preguntarle cuál tiene activa**. La
+única forma de establecer qué hace un hardware concreto con el `ESC t n` es
+imprimir todos los candidatos y que una persona lea el papel.
+
+```
+POST /api/print/calibrate          { "printer_name": "POS-80" }
+POST /api/print/calibrate/confirm  { "printer_name": "POS-80", "option": 3 }
+```
+
+El ticket de prueba (`BuildCalibrationTicket`) imprime la misma cadena de
+referencia —`ÁÉÍÓÚ ÜÑ ¿¡ áéíóú üñ`— una vez por candidato, numerada y precedida
+de su propio `ESC t n`:
+
+| Opción | Qué imprime |
+|---|---|
+| `[1]` | **Sin `ESC t` ninguno**: revela qué hace la impresora con la tabla que arrancó, que es el dato que falta cuando el hardware ignora la selección |
+| `[2]`–`[5]` | Una por página soportada, con su numeración estándar de Epson |
+
+El operador busca la línea donde `ÁÉÍÓÚ` sale como letras y no como símbolos de
+dibujo, y devuelve ese número. El agente guarda entonces un **perfil verificado**
+en `config.json`, y a partir de ahí esa impresora deja de plegar los cuatro
+caracteres. `option: 0` es la otra respuesta útil —"ninguna línea es correcta"—,
+que es un resultado real en una impresora cuya ROM no tiene vocales acentuadas
+mayúsculas: se guarda como perfil no verificado y la deja en modo compatible para
+siempre.
+
+Todo el texto de instrucciones del ticket es ASCII puro a propósito: tiene que
+leerse incluso en la impresora que falla todos los candidatos, que es justo la
+que más lo necesita.
+
+**Modelos conocidos.** Un nombre de cola que coincide con `knownPrinterModels`
+(Epson TM, Bixolon SRP, Star TSP/mC) se da por verificado sin calibrar. La lista
+es corta y conservadora a propósito: un nombre es evidencia débil —una cola
+llamada `POS-58` no dice nada del firmware que hay detrás—, y sólo entra ahí el
+fabricante que publica su juego de comandos ESC/POS. Equivocarse por prudencia
+cuesta cuatro caracteres plegados; equivocarse al revés cuesta un ticket que el
+cliente no puede leer.
+
+**Orden de autoridad.** `EncodingOptionsFor` combina cuatro fuentes, de menor a
+mayor: valores por defecto → `config.json` → **perfil de esa impresora** →
+campos de la petición. El perfil manda sobre la configuración global porque la
+página de códigos es una propiedad del hardware: una caja con una Epson en el
+mostrador y una clónica en la cocina necesita dos respuestas distintas, y una
+sola clave global es necesariamente incorrecta para una de las dos.
+
+### Reafirmación de la página tras cada `ESC @`
+
+`ESC @` devuelve la impresora a su estado de encendido, y eso incluye la tabla de
+caracteres: todo lo impreso después decodifica contra la página de fábrica, dé
+igual lo que se hubiera seleccionado antes. Un frontend que abre cada sección
+lógica del ticket con su propio reinicio —una forma común de asegurarse de que el
+logo, el cuerpo y el pie parten de un estado conocido— imprimía la primera
+sección con acentos y el resto sin ellos.
+
+`reassertAfterResets` reinyecta `ESC t n` detrás de **cada** `ESC @` del payload.
+Tres bytes por reinicio cierran todo ese modo de fallo. Un reinicio que ya trae su
+propia selección se deja intacto, y los bloques gráficos se saltan con
+`graphicsCommandLength`: dos bytes de un logo pueden valer `1B 40` por
+casualidad, e inyectar un comando dentro de una imagen corrompería el resto del
+ticket.
+
+**2. Transcodificación UTF-8 → bytes de la página de códigos (encoder CP858)**
 
 Éste es el mecanismo que de verdad arregla los acentos, y el motivo por el que
 el prefijo `ESC t n` por sí solo no bastaba: **el texto llega al agente en
@@ -887,7 +1400,7 @@ Desde la Fase 11 esa conversión la hace el codificador oficial de
 `golang.org/x/text/encoding/charmap`, no una tabla mantenida a mano:
 
 ```go
-encoder := charmap.Windows1252.NewEncoder()
+encoder := charmap.CodePage858.NewEncoder()
 encodedBytes, err := encoder.Bytes(textoDelTicket)   // "Á" -> 0xC1
 ```
 
@@ -950,42 +1463,18 @@ comandos. Por eso el recorrido:
   tramo entero por `encoder.Bytes()`. Un comando ESC/POS nunca empieza por un
   byte ≥ `0x80`, así que un tramo no puede tragarse una cabecera.
 
-### Por qué CP1252 es ahora la página por defecto — el caso «†nimo»
+### Historia de la página por defecto
 
-Síntoma en producción: el ticket imprimía **`†nimo`** donde debía decir
-**`Ánimo`**. Un único carácter fuera de sitio, siempre en las mayúsculas
-acentuadas, y sólo en algunas cajas.
+| Versión | Página por defecto | Por qué se cambió |
+|---|---|---|
+| ≤ 1.4.0 | CP850 (`ESC t 2`) | Multilingual Latin-1, la elección obvia para español |
+| 1.5.0 – 1.8.0 | CP1252 (`ESC t 16`) | Se creyó que una ticketera colgada de Windows esperaba bytes Latin-1 |
+| ≥ 1.9.0 | **PC858 (`ESC t 19`) + modo compatible** | CP1252 no comparte ningún byte con PC437: cuando la impresora ignora la selección falla el ticket entero, no cuatro caracteres. Ver "Por qué PC858 y no CP1252" |
 
-La causa es que **la `Á` no tiene un byte universal**: cada página de códigos la
-coloca en una posición distinta.
-
-| Página activa en el hardware | Byte `0xB5` (la `Á` de CP850) se imprime como |
-|---|---|
-| CP850 | `Á` ✔ |
-| CP1252 | `µ` |
-| CP437 | `╡` |
-| Otras tablas del firmware | cualquier otro símbolo — de ahí la `†` |
-
-Con CP850 el agente enviaba `0xB5`, un byte que **sólo** significa `Á` en esa
-página concreta. Basta con que la ticketera pierda la selección —un `ESC @` que
-manda el frontend a mitad del ticket, un corte de corriente, un reinicio del
-spooler, un modelo que arranca en su tabla de fábrica— para que ese mismo byte
-se dibuje como el símbolo que ocupe esa posición en la tabla que quedó activa.
-
-CP1252 elimina esa fragilidad en una caja de cobro Windows: sus bytes son los de
-Latin-1 (`Á` = `0xC1`), que es lo que la ticketera y el propio sistema esperan
-por defecto. Si la selección de página se pierde, el texto sigue saliendo bien.
-
-Qué cambia exactamente:
-
-1. `defaultCodePage` pasa de `cp850` a `cp1252` (`escpos.go`).
-2. Todo flujo de impresión RAW abre con `1B 74 10` (`ESC t 16` → CP1252),
-   detrás del `ESC @` —el del propio payload si lo trae y, desde la v1.7.0, el
-   que inyecta el agente si no lo trae (ver "Preámbulo de todo ticket").
-3. El texto se transcodifica a los bytes de CP1252 (`Á` → `0xC1`).
-4. Los `config.json` ya existentes se migran de `cp850` a `cp1252` mediante
-   `config_version` (ver "Migraciones de esquema"): sin esa migración las cajas
-   ya instaladas habrían seguido imprimiendo mal después de actualizar.
+El razonamiento completo, con el caso real del ticket que imprimía `╡nimo`
+mientras `Michoacán` salía perfecta, está en "El problema", "Por qué no basta
+con seleccionar la página" y "Modo Compatible", más arriba en este mismo
+capítulo.
 
 ### Ticketeras con numeración propia — `escpos_code_page_id`
 
@@ -1170,12 +1659,15 @@ return insertEncodingPreamble(payload, opts.Selector(cp), opts.Initialize), nil
   traducción a la página de códigos; el pliegue es la capa que tiene que
   funcionar *sobre todo* cuando la página no se aplica, así que se ejecuta igual
   con `"escpos_transcode": false`.
-- **Tiene su propio interruptor: `strip_accents`** (default `true`). Es un
-  fallback, no una verdad universal: en una ticketera que sí respeta el
-  `ESC t n` el pliegue está de más y cuesta las eñes. Con
-  `"strip_accents": false` el texto llega al codificador con sus acentos y
-  `Ñoño 20° €` sale como `D1 6F F1 6F 20 32 30 B0 20 80` en CP1252 —un byte por
-  carácter— en vez de plegado a `Nono`. Es el interruptor que se toca cuando el
+- **Tiene su propio interruptor: `strip_accents`** (default `false` desde la
+  v1.9.0). Es un fallback, no una verdad universal, y además uno demasiado
+  caro: pliega también la `á` de `Michoacán` y la `ñ` de `niño`, que ninguna
+  impresora del parque se equivoca. Desde la v1.9.0 ese trabajo lo hace el
+  **modo compatible**, que pliega sólo `Á Í Ó Ú`, y este interruptor queda
+  reservado a la impresora que no imprima bien ni siquiera el subconjunto
+  seguro. Con `"strip_accents": false` el texto llega al codificador con sus
+  acentos y `Ñoño 20° €` sale como `A5 6F A4 6F 20 32 30 F8 20 D5` en PC858
+  —un byte por carácter— en vez de plegado a `Nono`. Es el interruptor que se toca cuando el
   operador se queja de que le faltan las eñes, y el único cambio necesario: no
   hay que recompilar ni reinstalar, basta con editar el `config.json` y
   reiniciar el agente.
@@ -1273,17 +1765,33 @@ Las resoluciones pequeñas del `.ico` se dibujan por separado, no reduciendo la
 grande: a 16×16 cualquier detalle se convierte en ruido, así que el icono es
 deliberadamente plano — silueta negra, mancha blanca del hocico y ojos dorados.
 
-### Icono del ejecutable y manifiesto (`rsrc_windows_amd64.syso`)
+### Recursos Win32 del Ejecutable (`rsrc_windows_amd64.syso`)
 
 `//go:embed` resuelve el icono de la bandeja, pero **no** el que muestran el
 Explorador, Alt+Tab o el panel de aplicaciones instaladas: ése tiene que ser un
-recurso Win32 del PE. Se genera con `rsrc` y el enlazador de Go lo incorpora
-solo por el sufijo `_windows_amd64` del nombre:
+recurso Win32 del PE. El enlazador de Go incorpora el `.syso` solo por el sufijo
+`_windows_amd64` del nombre.
+
+**Desde la v1.9.0 el generador es `goversioninfo` y no `rsrc`.** El motivo es
+que `rsrc` sabe embeber un icono y un manifiesto pero **no** un bloque
+VERSIONINFO, y sin él la pestaña *Propiedades → Detalles* del binario sale
+completamente vacía: ni versión, ni empresa, ni descripción, ni copyright. Eso
+es lo primero que mira un departamento de sistemas antes de autorizar un
+ejecutable en una caja, y es también lo que pesan SmartScreen y la mayoría de
+las suites de protección. `goversioninfo` produce las tres cosas en un solo
+`.syso` a partir de `versioninfo.json`, que además queda como texto revisable en
+el repositorio:
 
 ```bash
-go run github.com/akavel/rsrc@v0.10.2 \
-  -ico app_icon.ico -manifest app.manifest -arch amd64 -o rsrc_windows_amd64.syso
+go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1 \
+  -64 -o rsrc_windows_amd64.syso versioninfo.json
 ```
+
+`versioninfo.json` apunta a `app_icon.ico` y a `app.manifest`, así que **los
+tres archivos se regeneran con ese único comando**. El resultado se verifica
+solo: `TestVersionIsConsistentAcrossArtifacts` falla si la versión de
+`versioninfo.json`, la de `app.manifest`, la del instalador y `AgentVersion`
+dejan de coincidir.
 
 El mismo `.syso` embebe `app.manifest`, que aporta dos cosas:
 
@@ -1558,7 +2066,7 @@ las compone.
 | Función | Rutas | Auth |
 |---|---|---|
 | `newPublicMux()` | `GET /health`, `GET /api/health` | No |
-| `newProtectedMux()` | `GET /api/printers`, `GET /api/printers/queue`, `POST /api/print`, `POST /api/print/pdf` | Sí |
+| `newProtectedMux()` | `GET /api/printers`, `GET /api/printers/queue`, `POST /api/print`, `POST /api/print/pdf`, `POST /api/print/test`, `POST /api/print/calibrate`, `POST /api/print/calibrate/confirm` | Sí |
 
 ```
 corsMiddleware                       (envuelve TODO el servidor)
@@ -1611,6 +2119,9 @@ Base: `http://127.0.0.1:{port}` (puerto dinámico, default 9100)
 | `GET` | `/api/printers/queue` | Si | Cola de impresión de una impresora específica |
 | `POST` | `/api/print` | Si | Envía datos RAW (ESC/POS) a una impresora térmica |
 | `POST` | `/api/print/pdf` | Si | Imprime un archivo PDF en una impresora convencional |
+| `POST` | `/api/print/test` | Si | Imprime el ticket de autodiagnóstico: datos técnicos de la impresora y juego de caracteres completo |
+| `POST` | `/api/print/calibrate` | Si | Imprime el ticket de calibración de acentos y devuelve las opciones numeradas |
+| `POST` | `/api/print/calibrate/confirm` | Si | Guarda el perfil de la impresora a partir del número de línea que el operador leyó en el papel |
 
 ### `POST /api/print` — Cuerpo de la petición
 
@@ -1675,8 +2186,10 @@ Todo lo demás sigue siendo stdlib: el icono se embebe con `//go:embed`, las
 ilustraciones se generan con `image`/`image/png` y el diálogo de bienvenida es
 una llamada directa a `user32.dll` (`MessageBoxW`) vía `syscall`.
 
-`github.com/akavel/rsrc` se usa como herramienta puntual (`go run …@v0.10.2`)
-para regenerar `rsrc_windows_amd64.syso`; no aparece en `go.mod` ni se enlaza.
+`github.com/josephspurrier/goversioninfo` se usa como herramienta puntual
+(`go run …@v1.4.1`) para regenerar `rsrc_windows_amd64.syso`; no aparece en
+`go.mod` ni se enlaza. Sustituyó a `github.com/akavel/rsrc` en la v1.9.0, que no
+sabía generar el bloque VERSIONINFO.
 
 ## Compilación para Producción
 
@@ -1699,14 +2212,14 @@ Los recursos gráficos ya están versionados en el repositorio, así que compila
 
 ```bash
 go run ./tools/genassets                       # los 3 .ico + los 3 .png + welcome_cat.png
-go run github.com/akavel/rsrc@v0.10.2 \        # rsrc_windows_amd64.syso (icono + manifiesto)
-  -ico app_icon.ico -manifest app.manifest -arch amd64 -o rsrc_windows_amd64.syso
+go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1 \  # icono + manifiesto + VERSIONINFO
+  -64 -o rsrc_windows_amd64.syso versioninfo.json
 ```
 
 El `.syso` embebe la versión declarada en `app.manifest`, así que hay que
 regenerarlo al subir de versión. En la v1.8.0 se hizo: `app.manifest` pasó de
 `1.6.0.0` —se había quedado atrás en la v1.7.0— a `1.8.0.0`, y el `.syso` se
-regeneró con el comando de arriba. La salida de `rsrc` es determinista: el
+regeneró con el comando de arriba. La salida del generador es determinista: el
 artefacto anterior se reproduce byte a byte desde su manifiesto, y el nuevo
 difiere en el único byte de la cadena de versión.
 
@@ -1721,7 +2234,8 @@ igual, sólo que mintiendo sobre su versión):
 | `AgentVersion` | `config.go` | `/api/health` reporta la versión vieja y el panel del POS muestra "🟢 Agente Detectado" con el número anterior; el marcador `welcome-shown` no se invalida y la bienvenida no se vuelve a mostrar tras actualizar |
 | `#define AppVersion` | `installer/setup.iss` | `AppVersion` y el nombre del `.exe` de salida (`OutputBaseFilename`) se quedan atrás, y Windows ve la actualización como una reinstalación de la misma versión |
 | `version=` del `assemblyIdentity` | `app.manifest` | Las propiedades del ejecutable en el Explorador siguen mostrando la versión vieja |
-| `rsrc_windows_amd64.syso` | regenerado con `rsrc` | El `.exe` enlaza el manifiesto **anterior**: editar `app.manifest` sin regenerar el `.syso` no cambia nada en el binario |
+| `rsrc_windows_amd64.syso` | regenerado con `goversioninfo` | El `.exe` enlaza el manifiesto y la versión **anteriores**: editar `app.manifest` o `versioninfo.json` sin regenerar el `.syso` no cambia nada en el binario |
+| `versioninfo.json` | `FileVersion` y `ProductVersion` | Es lo que se lee en *Propiedades → Detalles*; `TestVersionIsConsistentAcrossArtifacts` lo comprueba |
 
 ### Pipeline completo de distribución Windows:
 

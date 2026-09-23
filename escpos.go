@@ -41,18 +41,31 @@ type CodePage struct {
 // payload viaja al spooler byte por byte, tal cual lo envió el frontend.
 const codePageNone = "none"
 
-// defaultCodePage es la página por defecto para tickets en español.
+// defaultCodePage is the table a ticket is encoded against when nobody has
+// configured anything, and since v1.9.0 it is PC858 again — no longer CP1252.
 //
-// Desde la v1.5.0 es CP1252 (Windows Latin-1) y ya no CP850. Las dos contienen
-// las cinco vocales acentuadas mayúsculas, pero CP1252 tiene una ventaja
-// decisiva en una caja de cobro Windows: sus bytes coinciden exactamente con
-// los de Latin-1, que es lo que las ticketeras conectadas a Windows esperan por
-// defecto. Con CP850 el mismo texto se codifica en posiciones distintas
-// (`Á` = 0xB5 en CP850 frente a 0xC1 en CP1252), así que en cuanto el hardware
-// ignora o pierde la selección de página —tras un `ESC @`, un corte de
-// corriente o un reinicio del spooler— la `Á` sale impresa como el símbolo que
-// ocupe ese byte en la tabla activa (el caso "†nimo" en lugar de "Ánimo").
-const defaultCodePage = "cp1252"
+// The reasoning behind CP1252 (v1.5.0–v1.8.0) was that its bytes are Latin-1's,
+// which is what a printer hanging off a Windows box is assumed to expect. The
+// field disproved it: the agent writes RAW bytes straight to the spooler, so no
+// Windows driver ever translates them, and a printer that ignores "ESC t 16"
+// keeps decoding PC437. Under that failure —the common one— CP1252 is the worst
+// of the four choices, because it shares no byte with PC437 above ASCII and
+// every single accent comes out wrong ("Michoacßn"). PC858 shares its bytes with
+// PC437 for all of them but four, so the same failure costs the accent on
+// Á Í Ó Ú and nothing else.
+//
+// Those four are then handled by compatibility mode, which folds them to ASCII
+// until the printer is verified (see escpos_compat.go). The pair —PC858 plus the
+// fold— is the only configuration that cannot print garbage on hardware nobody
+// has surveyed, which is the property a receipt printer in a shop needs.
+const defaultCodePage = "cp858"
+
+// codePageAuto is the name that spells out the pairing above in config.json:
+// PC858 with compatibility mode left to its default (on until the printer is
+// verified). It is an alias of "cp858" — the mode is a separate key — and it
+// exists so that an operator reading the file can tell a value the agent chose
+// from one a human deliberately pinned.
+const codePageAuto = "auto"
 
 // supportedCodePages indexa las páginas soportadas por su nombre canónico.
 // Los valores de "n" siguen la tabla estándar de Epson ESC/POS, respetada por
@@ -76,6 +89,7 @@ var supportedCodePages = map[string]CodePage{
 var codePageAliases = map[string]string{
 	"850": "cp850", "pc850": "cp850", "ibm850": "cp850", "latin1": "cp850", "multilingual": "cp850",
 	"858": "cp858", "pc858": "cp858", "ibm858": "cp858", "euro": "cp858",
+	codePageAuto: "cp858", "automatico": "cp858", "automático": "cp858",
 	"1252": "cp1252", "wpc1252": "cp1252", "windows1252": "cp1252", "windows-1252": "cp1252", "winlatin1": "cp1252",
 	"437": "cp437", "pc437": "cp437", "ibm437": "cp437", "usa": "cp437",
 	"off": codePageNone, "raw": codePageNone, "disabled": codePageNone, "ninguna": codePageNone,
@@ -95,6 +109,13 @@ type EncodingOptions struct {
 	// it off keeps the real accented characters and leaves them to the
 	// transcoder, which is what a printer that honours "ESC t n" wants.
 	StripAccents bool
+	// Compatibility restricts the ticket to the characters that PC437, PC850 and
+	// PC858 encode with the very same byte, folding the four Spanish characters
+	// they disagree on (Á Í Ó Ú) to ASCII. It is what makes a ticket printable
+	// on a printer whose active code page is unknown: see escpos_compat.go. It
+	// is turned off by a verified printer profile, which is when the four
+	// remaining characters can be printed for real.
+	Compatibility bool
 	// Initialize prepends "ESC @" (printer reset) to the payload, so that every
 	// ticket starts from a known state and the code page selection that follows
 	// it cannot be undone by leftover state from the previous job. A payload
@@ -116,10 +137,11 @@ type EncodingOptions struct {
 // does not silently default to false in one of the call sites.
 func DefaultEncodingOptions() EncodingOptions {
 	return EncodingOptions{
-		CodePage:     defaultCodePage,
-		Transcode:    true,
-		StripAccents: true,
-		Initialize:   true,
+		CodePage:      defaultCodePage,
+		Transcode:     true,
+		StripAccents:  false,
+		Compatibility: true,
+		Initialize:    true,
 	}
 }
 
@@ -169,18 +191,26 @@ func SupportedCodePageNames() []string {
 
 // BuildESCPOSPayload builds the definitive bytes written to the thermal printer:
 //
-//  1. Folds the diacritics of the ticket text, so that "Ánimo" travels to the
-//     printer as "Animo" (see sanitizeTextForPrinter). This is the fallback for
-//     the hardware that ignores the code page selection of step 4, and it is
-//     skipped when opts.StripAccents is false.
-//  2. Transcodes the UTF-8 text to the bytes of the printer's code page
+//  1. Folds every diacritic of the ticket text, so that "Ánimo" travels as
+//     "Animo" and "Michoacán" as "Michoacan" (see sanitizeTextForPrinter). This
+//     is the blunt fallback kept for the hardware that prints nothing but plain
+//     ASCII correctly; it is off by default and enabled with "strip_accents".
+//  2. Folds only what the printer could get wrong, when compatibility mode is
+//     on: the characters PC437, PC850 and PC858 encode identically are kept as
+//     they are, and the four Spanish ones they disagree on (Á Í Ó Ú) are folded
+//     to ASCII. "Michoacán" keeps its accent, "Ánimo" becomes "Animo", and the
+//     ticket cannot print garbage on a printer whose active table is unknown
+//     (see escpos_compat.go). The mode also pins the encoding to PC858, the page
+//     whose bytes that subset is defined against.
+//  3. Transcodes the UTF-8 text to the bytes of the printer's code page
 //     (¿ ¡ € º …), which would otherwise print as pairs of garbage characters
 //     because the printer decodes every UTF-8 byte on its own.
-//  3. Prepends "ESC @" (0x1B 0x40) to reset the printer, unless the payload
+//  4. Prepends "ESC @" (0x1B 0x40) to reset the printer, unless the payload
 //     already opens with one of its own or opts.Initialize is false.
-//  4. Prepends "ESC t n" to select that same code page on the printer, always
-//     behind the "ESC @" of step 3 — the reset restores the factory code page,
-//     so a selection placed before it would be undone.
+//  5. Prepends "ESC t n" to select that same code page on the printer, always
+//     behind the "ESC @" of step 4 — the reset restores the factory code page,
+//     so a selection placed before it would be undone — and re-sends it after
+//     every further "ESC @" the payload carries, for the same reason.
 //
 // If the payload already carries its own "ESC t", the emitter is assumed to
 // manage the encoding itself and the bytes are returned untouched.
@@ -196,6 +226,18 @@ func BuildESCPOSPayload(data []byte, opts EncodingOptions) ([]byte, error) {
 		return data, nil
 	}
 
+	// Compatibility mode is defined against the bytes of the DOS family, so it
+	// encodes with PC858 whatever the configuration named. Honouring a CP1252
+	// setting here would defeat the mode: its safe subset does not survive a
+	// Latin-1 layout, and the fold would be paying for a guarantee it no longer
+	// provides. A deliberate CP1252 install turns the mode off instead — with
+	// "escpos_compatibility": false or by verifying the printer.
+	if opts.Compatibility && cp.Name != compatibilityCodePage {
+		if forced, _, err := ResolveCodePage(compatibilityCodePage); err == nil {
+			cp = forced
+		}
+	}
+
 	// Diacritics go first, because folding an accent into its base letter turns
 	// it into plain ASCII, and plain ASCII is the one thing every code page
 	// —selected or ignored— prints the same way. Whatever survives the fold
@@ -203,12 +245,15 @@ func BuildESCPOSPayload(data []byte, opts EncodingOptions) ([]byte, error) {
 	payload := data
 	if opts.StripAccents {
 		payload = sanitizePayloadText(payload)
+	} else if opts.Compatibility {
+		payload = foldPayloadToUniversalSafe(payload)
 	}
 	if opts.Transcode {
 		payload = transcodeToCodePage(payload, cp.Charmap)
 	}
 
-	return insertEncodingPreamble(payload, opts.Selector(cp), opts.Initialize), nil
+	selector := opts.Selector(cp)
+	return reassertAfterResets(insertEncodingPreamble(payload, selector, opts.Initialize), selector), nil
 }
 
 // sanitizeTextForPrinter removes the diacritical marks of a string and keeps the
@@ -318,12 +363,70 @@ func insertEncodingPreamble(data []byte, selector byte, initialize bool) []byte 
 	return out
 }
 
+// reassertAfterResets re-sends "ESC t n" behind every "ESC @" that appears
+// further down the payload, so that a reset the frontend emits in the middle of
+// a ticket cannot silently undo the code page selection made at the top.
+//
+// "ESC @" restores the printer to its power-on state, and that includes the
+// character table: everything printed after it decodes against the factory page
+// —PC437 on nearly all the hardware— no matter what was selected before. A
+// frontend that opens each logical section of a ticket with its own reset (a
+// common way to make sure the logo, the body and the footer all start from a
+// known state) therefore prints the first section with accents and the rest
+// without them, which is the kind of defect that is impossible to read off a
+// receipt. Three bytes after each reset removes the whole failure mode.
+//
+// A reset that already carries its own selection is left alone, which is what
+// keeps this from duplicating the preamble insertEncodingPreamble just wrote.
+// Graphics blocks are skipped with graphicsCommandLength, because two bytes of a
+// logo's raster data can perfectly well read 0x1B 0x40 and injecting a command
+// into the middle of an image would corrupt the rest of the ticket.
+func reassertAfterResets(data []byte, selector byte) []byte {
+	out := make([]byte, 0, len(data))
+
+	for i := 0; i < len(data); {
+		if n := graphicsCommandLength(data[i:]); n > 0 {
+			out = append(out, data[i:i+n]...)
+			i += n
+			continue
+		}
+
+		if i+1 < len(data) && data[i] == escInitialize[0] && data[i+1] == escInitialize[1] {
+			out = append(out, escInitialize...)
+			i += 2
+			// A selection is pointless in front of another reset, which would
+			// wipe it two bytes later: a payload opening with several "ESC @"
+			// in a row gets one selection, behind the last of them.
+			if !startsWithCodePageCommand(data[i:]) && !startsWithInitialize(data[i:]) {
+				out = append(out, escSelectCodeTable[0], escSelectCodeTable[1], selector)
+			}
+			continue
+		}
+
+		out = append(out, data[i])
+		i++
+	}
+
+	return out
+}
+
+// startsWithCodePageCommand reports whether data opens with "ESC t n", the
+// selection reassertAfterResets would otherwise add.
+func startsWithCodePageCommand(data []byte) bool {
+	return len(data) >= 3 && data[0] == escSelectCodeTable[0] && data[1] == escSelectCodeTable[1]
+}
+
+// startsWithInitialize reports whether data opens with "ESC @".
+func startsWithInitialize(data []byte) bool {
+	return len(data) >= 2 && data[0] == escInitialize[0] && data[1] == escInitialize[1]
+}
+
 // transcodeToCodePage convierte las secuencias UTF-8 del payload a los bytes de
 // la página de códigos indicada, usando el codificador de
 // golang.org/x/text/encoding/charmap:
 //
-//	encoder := charmap.Windows1252.NewEncoder()
-//	bytes, err := encoder.Bytes(textoDelTicket)   // "Á" -> 0xC1
+//	encoder := charmap.CodePage858.NewEncoder()
+//	bytes, err := encoder.Bytes(textoDelTicket)   // "ñ" -> 0xA4
 //
 // El recorrido es conservador a propósito, porque un ticket RAW **no es una
 // cadena de texto**: mezcla texto con comandos y con datos binarios (logos,

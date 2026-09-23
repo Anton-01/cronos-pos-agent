@@ -15,6 +15,38 @@ type PrintRequest struct {
 	Transcode *bool `json:"transcode,omitempty"`
 }
 
+// TestTicketRequest pide el ticket de autodiagnóstico: los datos técnicos de la
+// impresora, el estado de la codificación y una muestra de cada clase de
+// carácter que puede llevar un ticket en español.
+type TestTicketRequest struct {
+	PrinterName string `json:"printer_name"`
+	// Columns es el ancho de línea en caracteres (24–64). El agente no puede
+	// preguntárselo a la impresora —depende del rollo: 32 en 58 mm, 42 en
+	// 80 mm—, así que el ticket imprime una regla y aquí se ajusta. Cero o
+	// fuera de rango usa 42.
+	Columns int `json:"columns,omitempty"`
+}
+
+// CalibrationRequest pide el ticket de calibración de acentos para una
+// impresora. Es el único modo de averiguar qué página de códigos decodifica de
+// verdad: ESC/POS no tiene ninguna orden para preguntárselo.
+type CalibrationRequest struct {
+	PrinterName string `json:"printer_name"`
+}
+
+// CalibrationConfirmRequest cierra la calibración: el número de la línea que el
+// operador ha visto impresa correctamente en el ticket de prueba.
+type CalibrationConfirmRequest struct {
+	PrinterName string `json:"printer_name"`
+	// Option es el número entre corchetes de esa línea. El valor 0 declara que
+	// ninguna era correcta, lo que fija la impresora en modo compatible de
+	// forma permanente: imprimirá "Animo" antes que "╡nimo".
+	Option int `json:"option"`
+	// CodePageID permite además fijar el "n" de "ESC t n" para esta impresora,
+	// para las clónicas que numeran sus páginas de otra forma. Nil = estándar.
+	CodePageID *int `json:"code_page_id,omitempty"`
+}
+
 type PrintJob struct {
 	ID           int    `json:"id"`
 	DocumentName string `json:"document_name"`

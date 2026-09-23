@@ -198,3 +198,49 @@ func enableAutostart() error {
 func disableAutostart() error {
 	return os.Remove(launchAgentPlistPath())
 }
+
+// describePrinter collects what CUPS knows about a printer for the self-test
+// ticket. It mirrors the Windows implementation field by field so that the
+// ticket layout does not depend on the platform; what CUPS cannot answer is
+// recorded in Notes and printed as such.
+func describePrinter(name string) PrinterTechnicalInfo {
+	info := PrinterTechnicalInfo{Name: name}
+
+	if out, err := exec.Command("lpstat", "-d").CombinedOutput(); err == nil {
+		// "system default destination: EPSON_TM_T20"
+		if idx := strings.LastIndex(string(out), ":"); idx >= 0 {
+			def := strings.TrimSpace(string(out)[idx+1:])
+			info.IsDefault = strings.EqualFold(def, strings.TrimSpace(name))
+		}
+	} else {
+		info.Notes = append(info.Notes, "no se pudo leer la impresora predeterminada")
+	}
+
+	// "device for EPSON_TM_T20: usb://EPSON/TM-T20" — the CUPS device URI is
+	// the equivalent of the Windows port.
+	if out, err := exec.Command("lpstat", "-v", name).CombinedOutput(); err == nil {
+		if idx := strings.Index(string(out), ":"); idx >= 0 {
+			info.Port = strings.TrimSpace(string(out)[idx+1:])
+		}
+	} else {
+		info.Notes = append(info.Notes, "no se pudo leer el dispositivo")
+	}
+
+	if out, err := exec.Command("lpstat", "-l", "-p", name).CombinedOutput(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "Description:") {
+				info.Driver = strings.TrimSpace(strings.TrimPrefix(trimmed, "Description:"))
+			}
+			if strings.HasPrefix(trimmed, "Interface:") {
+				info.Processor = strings.TrimSpace(strings.TrimPrefix(trimmed, "Interface:"))
+			}
+		}
+	}
+
+	if queue, err := queryPrintQueue(name); err == nil {
+		info.QueuedIDs = queue.JobsCount
+	}
+
+	return info
+}
